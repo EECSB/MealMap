@@ -1,0 +1,600 @@
+  :root{
+    --bg:#f6f1ea; --surface:#ffffff; --surface-2:#fbf8f3;
+    --ink:#2a2521; --muted:#8a8178; --line:#e9ded0;
+    --accent:#c75d3c; --accent-dark:#a8492d; --accent-soft:#f7e7df;
+    --breakfast:#e0992f; --lunch:#5a9e6f; --dinner:#6a6fb0; --snack:#cd6b8f;
+    --shadow:0 1px 2px rgba(42,37,33,.05), 0 8px 24px -12px rgba(42,37,33,.18);
+    --shadow-lg:0 12px 48px -16px rgba(42,37,33,.35);
+    --radius:16px; --radius-sm:10px;
+    --serif:'Fraunces', Georgia, 'Times New Roman', serif;
+    --sans:'Inter', system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    font-family:var(--sans); color:var(--ink); background:var(--bg);
+    -webkit-font-smoothing:antialiased; line-height:1.5;
+  }
+  button{font-family:inherit; cursor:pointer; border:none; background:none; color:inherit}
+  input,select,textarea{font-family:inherit; font-size:14px; color:var(--ink)}
+
+  /* ---------- Header ---------- */
+  header.app{
+    position:sticky; top:0; z-index:30;
+    background:linear-gradient(120deg,#23190f,#3a2a1c);
+    color:#f6efe4; padding:0 24px;
+    box-shadow:0 4px 24px -12px rgba(0,0,0,.6);
+  }
+  .header-row{display:flex; align-items:center; gap:16px; max-width:1180px; margin:0 auto; min-height:68px; flex-wrap:wrap}
+  .brand{display:flex; align-items:center; gap:11px; margin-right:auto}
+  .brand .logo{width:34px; height:34px; flex:none; display:block; filter:drop-shadow(0 2px 7px rgba(0,0,0,.45))}
+  .brand h1{font-family:var(--serif); font-weight:600; font-size:21px; margin:0; letter-spacing:.2px}
+  .brand small{display:block; font-size:11.5px; color:#c9b9a6; font-weight:400; letter-spacing:.3px}
+  .tabs{display:flex; gap:4px; background:rgba(255,255,255,.08); padding:4px; border-radius:11px; min-height:40px; align-items:center}
+  .tab{
+    padding:0 16px; height:32px; border-radius:8px; font-weight:600; font-size:14px;
+    color:#d8c8b6; transition:.15s; display:inline-flex; align-items:center; gap:7px;
+  }
+  .tab:hover{color:#fff}
+  .tab.active{background:var(--accent); color:#fff; box-shadow:0 4px 12px -4px rgba(199,93,60,.6)}
+  .flag{width:21px; height:11px; border-radius:2px; box-shadow:0 0 0 1px rgba(0,0,0,.18); flex-shrink:0; display:block}
+  .hbtn{display:inline-flex; align-items:center; gap:6px; height:40px; padding:0 14px; border-radius:10px; background:rgba(255,255,255,.08); color:#e7d8c6; font-weight:600; font-size:13px; transition:.15s}
+  .hbtn:hover{background:rgba(255,255,255,.16); color:#fff}
+  /* segmented controls (Settings preferences) */
+  .pref{display:flex; flex-direction:column; gap:12px; margin-bottom:4px}
+  .pref-row{display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap}
+  .pref-label{font-weight:600; font-size:14px}
+  .seg{display:inline-flex; gap:3px; background:var(--surface-2); border:1px solid var(--line); border-radius:10px; padding:3px}
+  .seg-btn{display:inline-flex; align-items:center; gap:6px; padding:7px 13px; border-radius:8px; font-weight:600; font-size:13px; color:var(--muted); transition:.15s; letter-spacing:.3px; cursor:pointer}
+  .seg-btn:hover{color:var(--ink)}
+  .seg-btn.active{background:var(--accent); color:#fff}
+  /* Language dropdown — a custom listbox rather than <select>, because a native
+     select cannot render the inline SVG flags. */
+  /* ---------- photo gallery, drop target, nutrition ---------- */
+  .btn.danger{background:#c0392b}
+  .btn.danger:hover{background:#a53224}
+  .img-pick.dragover{outline:2px dashed var(--accent); outline-offset:5px; border-radius:12px; background:var(--accent-soft)}
+  .img-strip{display:flex; flex-wrap:wrap; gap:9px; margin-top:11px}
+  .img-strip:empty{display:none}
+  .img-thumb{
+    position:relative; width:66px; height:50px; flex:none; cursor:pointer;
+    border-radius:9px; border:2px solid var(--line);
+    background-size:cover; background-position:center; transition:.15s;
+  }
+  .img-thumb:hover{border-color:var(--muted)}
+  .img-thumb.primary{border-color:var(--accent)}
+  .img-thumb .x{
+    position:absolute; top:-7px; right:-7px; width:19px; height:19px; border-radius:50%;
+    background:var(--ink); color:#fff; font-size:11px; line-height:19px; text-align:center;
+    opacity:.9; transition:.15s;
+  }
+  .img-thumb .x:hover{background:var(--accent); opacity:1}
+  .nutri-row{display:grid; grid-template-columns:repeat(4,1fr); gap:8px}
+  .nutri-row input{width:100%; min-width:0}
+  .nutri-chips{display:flex; gap:8px; flex-wrap:wrap; margin:12px 0 0}
+  .nutri-chips:empty{display:none}
+  .nutri-chips span{
+    background:var(--surface-2); border:1px solid var(--line); border-radius:999px;
+    padding:5px 12px; font-size:12.5px; font-weight:600;
+  }
+  .recipe-gallery{display:flex; gap:8px; flex-wrap:wrap; margin:12px 0 0}
+  .recipe-gallery:empty{display:none}
+  .recipe-gallery img{
+    width:74px; height:56px; object-fit:cover; border-radius:9px;
+    border:2px solid transparent; cursor:pointer; transition:.15s;
+  }
+  .recipe-gallery img.active{border-color:var(--accent)}
+  .recipe-source{
+    display:inline-flex; align-items:center; gap:6px; margin-top:12px;
+    font-size:13.5px; font-weight:600; color:var(--accent); text-decoration:none;
+  }
+  .recipe-source[hidden]{display:none}
+  .recipe-source:hover{text-decoration:underline}
+  .shop-week{
+    background:var(--surface-2); border:1px solid var(--line); border-radius:9px;
+    padding:6px 8px; font-size:12.5px; font-weight:600; color:var(--ink); cursor:pointer;
+  }
+  .shop-week:hover{border-color:var(--accent)}
+  .fav-btn{
+    position:absolute; top:10px; right:10px; z-index:2;
+    width:30px; height:30px; border-radius:50%; border:none;
+    background:rgba(255,255,255,.9); color:#b9b0a5; font-size:16px; line-height:1;
+    display:flex; align-items:center; justify-content:center;
+    box-shadow:0 2px 8px -2px rgba(42,37,33,.4); transition:.15s;
+  }
+  .fav-btn:hover{background:#fff; color:var(--accent); transform:scale(1.08)}
+  .fav-btn.on{color:#e0992f}
+  .meta-btn{
+    display:inline-flex; align-items:center; gap:5px;
+    border:1px solid var(--line); background:var(--surface-2); color:var(--muted);
+    border-radius:999px; padding:3px 11px; font-size:12.5px; font-weight:600; transition:.15s;
+  }
+  .meta-btn:hover{border-color:var(--accent); color:var(--accent)}
+  .meta-btn.on{background:var(--accent-soft); border-color:var(--accent); color:var(--accent-dark)}
+  #favFilterBtn{font-size:16px; line-height:1; padding-left:13px; padding-right:13px}
+  #favFilterBtn.on{background:var(--accent); border-color:var(--accent); color:#fff}
+  .match-hint{
+    display:inline-block; margin:2px 0 8px; padding:3px 9px; border-radius:999px;
+    background:var(--accent-soft); color:var(--accent-dark);
+    font-size:12px; font-weight:600; max-width:100%;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .serv-step{display:inline-flex; align-items:center; gap:6px}
+  .serv-btn{
+    width:22px; height:22px; border-radius:6px; border:1px solid var(--line);
+    background:var(--surface-2); color:var(--ink); font-size:14px; font-weight:700;
+    line-height:1; display:inline-flex; align-items:center; justify-content:center; transition:.15s;
+  }
+  .serv-btn:hover{border-color:var(--accent); color:var(--accent)}
+  .linkbtn{
+    background:none; border:none; padding:0 2px; font:inherit; font-weight:700;
+    color:var(--accent); text-decoration:underline; cursor:pointer;
+  }
+  .linkbtn:hover{color:var(--accent-dark)}
+  .key-row{display:flex; gap:8px; align-items:stretch}
+  .key-row input{flex:1; min-width:0}
+  .key-row .btn{flex:none; white-space:nowrap}
+  .shop-range{display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:10px}
+  .shop-range[hidden]{display:none}
+  .shop-range label{font-size:12.5px; font-weight:600; color:var(--muted)}
+  .shop-range input{
+    background:var(--surface-2); border:1px solid var(--line); border-radius:9px;
+    padding:6px 9px; font-size:12.5px; color:var(--ink);
+  }
+  .langpick{position:relative}
+  .langpick-btn{
+    display:inline-flex; align-items:center; gap:8px; min-width:168px;
+    background:var(--surface-2); border:1px solid var(--line); border-radius:10px;
+    padding:8px 12px; font-weight:600; font-size:13px; color:var(--ink); transition:.15s;
+  }
+  .langpick-btn:hover{border-color:var(--accent)}
+  .langpick-btn .caret{margin-left:auto; color:var(--muted); font-size:10px; line-height:1}
+  .langpick-menu{
+    position:absolute; top:calc(100% + 5px); right:0; z-index:40; min-width:100%;
+    background:var(--surface); border:1px solid var(--line); border-radius:11px;
+    padding:5px; box-shadow:var(--shadow-lg); max-height:min(46vh,300px); overflow-y:auto;
+  }
+  .langpick-menu[hidden]{display:none}
+  .langpick-opt{
+    display:flex; align-items:center; gap:9px; width:100%; text-align:left;
+    padding:8px 10px; border-radius:8px; font-size:13.5px; font-weight:500;
+    color:var(--ink); white-space:nowrap; transition:.12s;
+  }
+  .langpick-opt:hover{background:var(--surface-2)}
+  .langpick-opt[aria-selected="true"]{background:var(--accent); color:#fff; font-weight:600}
+  .langpick-opt .tick{margin-left:auto; opacity:0; font-size:12px}
+  .langpick-opt[aria-selected="true"] .tick{opacity:1}
+
+  main{max-width:1180px; margin:0 auto; padding:26px 24px 80px}
+  .view{display:none}
+  .view.active{display:block; animation:fade .25s ease}
+  @keyframes fade{from{opacity:0; transform:translateY(6px)}to{opacity:1; transform:none}}
+
+  /* ---------- Toolbar ---------- */
+  .toolbar{display:flex; align-items:center; gap:12px; margin-bottom:22px; flex-wrap:wrap}
+  .toolbar h2{font-family:var(--serif); font-weight:600; font-size:26px; margin:0; margin-right:auto}
+  .search{position:relative}
+  .search input{
+    width:230px; padding:10px 12px 10px 36px; border:1px solid var(--line);
+    border-radius:10px; background:var(--surface); outline:none; transition:.15s;
+  }
+  .search input:focus{border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft)}
+  .search svg{position:absolute; left:11px; top:50%; transform:translateY(-50%); color:var(--muted)}
+  select.filter{
+    padding:10px 32px 10px 12px; border:1px solid var(--line); border-radius:10px;
+    background:var(--surface) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238a8178' stroke-width='3'><path d='M6 9l6 6 6-6'/></svg>") no-repeat right 11px center;
+    appearance:none; outline:none; cursor:pointer;
+  }
+  .btn{
+    display:inline-flex; align-items:center; gap:7px; padding:10px 16px; border-radius:10px;
+    background:var(--accent); color:#fff; font-weight:600; font-size:14px; transition:.15s;
+    box-shadow:0 4px 14px -6px rgba(199,93,60,.7);
+  }
+  .btn:hover{background:var(--accent-dark)}
+  .btn.ghost{background:var(--surface); color:var(--ink); border:1px solid var(--line); box-shadow:none}
+  .btn.ghost:hover{background:var(--surface-2); border-color:var(--muted)}
+  .btn.sm{padding:7px 12px; font-size:13px}
+  /* Nothing used :disabled before the file-sync buttons did, so a disabled
+     button looked exactly like a working one and simply ignored the click. */
+  .btn:disabled{opacity:.42; cursor:not-allowed; box-shadow:none}
+  .btn:disabled:hover{background:var(--accent)}
+  .btn.ghost:disabled:hover{background:var(--surface); border-color:var(--line)}
+
+  /* ---------- Menu grid ---------- */
+  .grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(248px,1fr)); gap:20px}
+  .card{
+    background:var(--surface); border:1px solid var(--line); border-radius:var(--radius);
+    overflow:hidden; box-shadow:var(--shadow); transition:.18s; cursor:pointer;
+    display:flex; flex-direction:column;
+  }
+  .card:hover{transform:translateY(-4px); box-shadow:var(--shadow-lg); border-color:#dcceba}
+  .thumb{
+    position:relative; aspect-ratio:16/10; background:linear-gradient(135deg,#f0e3d4,#e7d4c0);
+    display:flex; align-items:center; justify-content:center; overflow:hidden;
+  }
+  .thumb .emoji{font-size:54px; filter:saturate(1.1)}
+  .thumb img{position:absolute; inset:0; width:100%; height:100%; object-fit:cover}
+  .pill{
+    position:absolute; top:10px; left:10px; padding:4px 10px; border-radius:999px;
+    font-size:11px; font-weight:600; background:rgba(255,255,255,.92); color:var(--ink);
+    backdrop-filter:blur(4px); text-transform:capitalize; letter-spacing:.2px;
+  }
+  .card-body{padding:14px 15px 15px; display:flex; flex-direction:column; gap:6px; flex:1}
+  .card-body h3{font-family:var(--serif); font-weight:600; font-size:18px; margin:0; line-height:1.2}
+  .card-body p{margin:0; font-size:13px; color:var(--muted); display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden}
+  .card-meta{display:flex; align-items:center; gap:12px; font-size:12px; color:var(--muted); margin-top:2px}
+  .card-meta span{display:inline-flex; align-items:center; gap:4px}
+  .card-actions{display:flex; gap:8px; margin-top:auto; padding-top:12px}
+  .icon-btn{
+    flex:1; display:inline-flex; align-items:center; justify-content:center; gap:6px;
+    padding:8px; border-radius:9px; background:var(--surface-2); border:1px solid var(--line);
+    font-size:13px; font-weight:500; color:var(--ink); transition:.15s;
+  }
+  /* icon-only actions keep their natural width so the labelled ones are not squeezed */
+  .icon-btn.icon-only{flex:none; width:38px; padding-left:0; padding-right:0; font-size:15px}
+  .icon-btn:hover{background:var(--accent-soft); border-color:#eccab9; color:var(--accent-dark)}
+  .icon-btn.danger:hover{background:#fdecec; border-color:#f3c9c9; color:#c0392b}
+
+  /* ---------- Empty state ---------- */
+  .empty{
+    text-align:center; padding:70px 20px; color:var(--muted);
+    border:2px dashed var(--line); border-radius:var(--radius); background:var(--surface-2);
+  }
+  .empty .big{font-size:46px; margin-bottom:10px}
+  .empty h3{font-family:var(--serif); color:var(--ink); margin:0 0 6px; font-size:20px}
+  .empty p{margin:0 0 16px}
+
+  /* ---------- Pantry ---------- */
+  .pantry-list{display:flex; flex-direction:column; gap:9px; max-width:780px}
+  .p-row{display:flex; align-items:center; gap:13px; background:var(--surface); border:1px solid var(--line); border-radius:13px; padding:11px 14px; box-shadow:var(--shadow); transition:.15s}
+  .p-row:hover{border-color:#dcceba}
+  .p-row.low{border-left:3px solid var(--breakfast)}
+  .p-emoji{font-size:24px; width:30px; text-align:center; flex-shrink:0}
+  .p-info{flex:1; min-width:0}
+  .p-name{font-weight:600; font-size:15px; line-height:1.25; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .p-meta{font-size:12.5px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .p-low-toggle{font-size:11.5px; font-weight:600; padding:5px 11px; border-radius:999px; border:1px solid var(--line); background:var(--surface-2); color:var(--muted); white-space:nowrap; transition:.15s; flex-shrink:0}
+  .p-low-toggle:hover{border-color:var(--muted)}
+  .p-low-toggle.is-low{background:#fdf3e3; border-color:#f0d9b0; color:#9a6a16}
+  .p-ic{width:32px; height:32px; border-radius:8px; display:inline-flex; align-items:center; justify-content:center; color:var(--muted); border:1px solid transparent; transition:.15s; flex-shrink:0}
+  .p-ic:hover{background:var(--surface-2); color:var(--ink)}
+  .p-ic.danger:hover{background:#fdecec; color:#c0392b}
+  .ing-have{display:inline-block; font-size:11px; font-weight:600; color:#3f7d54; background:#e9f4ec; border-radius:6px; padding:1px 7px; margin-left:6px; vertical-align:1px}
+
+  /* ---------- Shopping ---------- */
+  .shop-grid{display:grid; grid-template-columns:340px 1fr; gap:24px; align-items:start}
+  .shop-panel{background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); padding:18px; box-shadow:var(--shadow)}
+  .shop-head{display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:14px; flex-wrap:wrap}
+  .shop-h{font-family:var(--serif); font-weight:600; font-size:20px; margin:0}
+  .shop-head-actions{display:flex; gap:8px; flex-wrap:wrap}
+  .shop-add{display:flex; gap:8px; margin-bottom:14px}
+  .shop-add input{flex:1; padding:10px 12px; border:1px solid var(--line); border-radius:10px; outline:none; transition:.15s}
+  .shop-add input:focus{border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft)}
+  .shop-list{display:flex; flex-direction:column; gap:7px}
+  .shop-item{display:flex; align-items:center; gap:10px; padding:9px 11px; border:1px solid var(--line); border-radius:10px; background:var(--surface-2)}
+  .shop-check{width:22px; height:22px; border-radius:6px; border:2px solid var(--line); background:var(--surface); display:flex; align-items:center; justify-content:center; flex-shrink:0; color:#fff; font-size:13px; transition:.15s}
+  .shop-item.done .shop-check{background:var(--lunch); border-color:var(--lunch)}
+  .shop-name{flex:1; font-size:14px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .shop-item.done .shop-name{text-decoration:line-through; color:var(--muted)}
+  .shop-del{width:28px; height:28px; border-radius:7px; color:var(--muted); display:flex; align-items:center; justify-content:center; font-size:19px; flex-shrink:0}
+  .shop-del:hover{background:#fdecec; color:#c0392b}
+
+  .avail-list{display:flex; flex-direction:column; gap:10px}
+  .avail-card{display:flex; align-items:center; gap:13px; padding:12px 14px; border:1px solid var(--line); border-radius:13px; background:var(--surface-2); transition:.15s}
+  .avail-card.ready{border-color:#bfe0c8; background:#f0f7f2}
+  .avail-emoji{font-size:26px; width:32px; text-align:center; flex-shrink:0; cursor:pointer}
+  .avail-info{flex:1; min-width:0; cursor:pointer}
+  .avail-name{font-family:var(--serif); font-weight:600; font-size:16px; line-height:1.2}
+  .avail-sub{display:flex; align-items:center; gap:7px; flex-wrap:wrap; margin-top:5px}
+  .have-badge{font-size:11.5px; font-weight:600; padding:2px 9px; border-radius:999px; background:var(--surface); border:1px solid var(--line); color:var(--muted)}
+  .have-badge.ready{background:#e9f4ec; border-color:#bfe0c8; color:#3f7d54}
+  .miss-chip{font-size:11.5px; padding:2px 9px; border-radius:999px; background:#fdf3e3; border:1px solid #f0d9b0; color:#9a6a16; cursor:pointer; white-space:nowrap; transition:.15s}
+  .miss-chip:hover{background:#fbe9cc}
+  .avail-add{flex-shrink:0; padding:8px 13px; border-radius:9px; background:var(--accent); color:#fff; font-size:12.5px; font-weight:600; transition:.15s; white-space:nowrap}
+  .avail-add:hover{background:var(--accent-dark)}
+  @media(max-width:860px){ .shop-grid{grid-template-columns:1fr} }
+
+  /* ---------- Calendar ---------- */
+  .cal-head{display:flex; align-items:center; gap:14px; margin-bottom:18px; flex-wrap:wrap}
+  .cal-head h2{font-family:var(--serif); font-weight:600; font-size:26px; margin:0; min-width:230px}
+  .cal-nav{display:flex; gap:6px}
+  .nav-btn{
+    width:38px; height:38px; border-radius:10px; border:1px solid var(--line); background:var(--surface);
+    display:inline-flex; align-items:center; justify-content:center; transition:.15s;
+  }
+  .nav-btn:hover{background:var(--accent-soft); border-color:#eccab9}
+  .legend{display:flex; gap:14px; margin-left:auto; flex-wrap:wrap; font-size:12.5px; color:var(--muted)}
+  .legend span{display:inline-flex; align-items:center; gap:6px}
+  .dot{width:10px; height:10px; border-radius:50%; display:inline-block}
+  .dot.breakfast{background:var(--breakfast)} .dot.lunch{background:var(--lunch)}
+  .dot.dinner{background:var(--dinner)} .dot.snack{background:var(--snack)}
+
+  .weekdays{display:grid; grid-template-columns:repeat(7,1fr); gap:8px; margin-bottom:8px}
+  .weekdays div{text-align:center; font-size:12px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.5px}
+  .cal-grid{display:grid; grid-template-columns:repeat(7,1fr); gap:8px}
+  .day{
+    background:var(--surface); border:1px solid var(--line); border-radius:12px; min-height:108px;
+    padding:8px; display:flex; flex-direction:column; gap:4px; transition:.15s; cursor:pointer; position:relative;
+  }
+  .day:hover{border-color:var(--accent); box-shadow:0 6px 18px -10px rgba(199,93,60,.5)}
+  .day.blank{background:transparent; border:none; cursor:default; box-shadow:none}
+  .day.today{border-color:var(--accent); background:#fff}
+  .day-num{font-size:13px; font-weight:600; color:var(--muted); align-self:flex-end}
+  .day.today .day-num{background:var(--accent); color:#fff; width:24px; height:24px; border-radius:50%; display:flex; align-items:center; justify-content:center}
+  .meal-chip{
+    font-size:11.5px; padding:3px 7px; border-radius:7px; background:var(--surface-2);
+    border-left:3px solid var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    display:flex; align-items:center; gap:5px;
+  }
+  .meal-chip.breakfast{border-color:var(--breakfast); background:#fdf3e3}
+  .meal-chip.lunch{border-color:var(--lunch); background:#eef6f0}
+  .meal-chip.dinner{border-color:var(--dinner); background:#eeeef6}
+  .meal-chip.snack{border-color:var(--snack); background:#fbeef3}
+  .add-mini{font-size:11px; color:var(--muted); margin-top:auto; opacity:0; transition:.15s}
+  .day:hover .add-mini{opacity:1}
+
+  /* ---------- dragging a planned meal to another day ----------
+     Built on pointer events, not the native HTML5 drag API: dragstart never
+     fires on mobile browsers, and reshuffling the week is exactly what you do
+     on a phone. One implementation covers mouse and touch. */
+  .meal-chip[data-i]{
+    cursor:grab; touch-action:manipulation;
+    user-select:none; -webkit-user-select:none; -webkit-touch-callout:none;
+  }
+  .meal-chip.lifted{opacity:.3}
+  .drag-ghost{
+    /* left/top stay at 0 — dragTo() drives it with a transform, which the
+       compositor can move without re-laying out the calendar every frame */
+    position:fixed; z-index:200; pointer-events:none; margin:0; left:0; top:0;
+    box-shadow:0 12px 26px -8px rgba(35,25,15,.55); opacity:.95;
+  }
+  .day.drop-in{
+    border-color:var(--accent); background:var(--accent-soft);
+    box-shadow:0 0 0 2px var(--accent) inset;
+  }
+  body.dragging-meal{cursor:grabbing}
+  body.dragging-meal .day:hover{box-shadow:none}
+  body.dragging-meal .add-mini{opacity:0 !important}
+
+  /* ---------- batch cooking ----------
+     Leftover days read as an echo of the cook day: same slot colour, but hollow
+     and dashed, so a glance at the month tells you which meals you actually have
+     to stand at the stove for. */
+  .meal-chip.leftover{background:transparent; border-left-style:dashed; color:var(--muted)}
+  .batch-tag{
+    font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.3px;
+    padding:3px 7px; border-radius:6px; white-space:nowrap;
+    background:var(--accent-soft); color:var(--accent-dark);
+  }
+  .batch-tag.leftover{background:var(--surface); color:var(--muted); border:1px dashed var(--line)}
+  .batch-meal{font-family:var(--serif); font-weight:600; font-size:18px; margin:0 0 16px}
+  .batch-sub{font-family:var(--serif); font-weight:600; font-size:16px; margin:22px 0 10px}
+  .batch-day{display:flex; gap:8px; align-items:center; margin-bottom:8px}
+  .batch-day .idx{font-size:12px; font-weight:700; color:var(--muted); width:22px; flex:none}
+  .batch-day input, .batch-day select{
+    flex:1; min-width:0; padding:8px 10px; border:1px solid var(--line); border-radius:9px;
+    background:var(--surface); font-family:inherit; font-size:13.5px; outline:none;
+  }
+  .batch-day input:focus, .batch-day select:focus{border-color:var(--accent)}
+
+  /* ---------- Modal ---------- */
+  .overlay{
+    position:fixed; inset:0; background:rgba(35,25,15,.55); backdrop-filter:blur(3px);
+    display:none; align-items:flex-start; justify-content:center; padding:40px 16px; z-index:50; overflow-y:auto;
+  }
+  .overlay.open{display:flex; animation:fade .2s ease}
+  .modal{
+    background:var(--surface); border-radius:20px; width:100%; max-width:560px;
+    box-shadow:var(--shadow-lg); overflow:hidden; animation:pop .22s cubic-bezier(.2,.8,.3,1);
+  }
+  .modal.wide{max-width:720px}
+  @keyframes pop{from{transform:scale(.96) translateY(10px); opacity:0}to{transform:none; opacity:1}}
+  .modal-head{
+    display:flex; align-items:center; justify-content:space-between; padding:18px 22px;
+    border-bottom:1px solid var(--line);
+  }
+  .modal-head h3{font-family:var(--serif); font-weight:600; font-size:21px; margin:0}
+  .close{width:34px; height:34px; border-radius:9px; display:flex; align-items:center; justify-content:center; color:var(--muted); transition:.15s}
+  .close:hover{background:var(--surface-2); color:var(--ink)}
+  .modal-body{padding:22px}
+  .modal-foot{display:flex; gap:10px; justify-content:flex-end; padding:16px 22px; border-top:1px solid var(--line); background:var(--surface-2)}
+
+  /* form */
+  .field{margin-bottom:16px}
+  .field label{display:block; font-size:13px; font-weight:600; margin-bottom:6px}
+  .field .hint{font-weight:400; color:var(--muted); font-size:12px}
+  .field input[type=text], .field input[type=number], .field input[type=date], .field textarea, .field select{
+    width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:10px;
+    background:var(--surface); outline:none; transition:.15s;
+  }
+  .field textarea{resize:vertical; min-height:84px; line-height:1.6}
+  .field input:focus, .field textarea:focus, .field select:focus{border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft)}
+  .row{display:flex; gap:14px}
+  .row .field{flex:1}
+  .img-pick{display:flex; gap:12px; align-items:flex-start}
+  .img-preview{width:84px; height:84px; border-radius:12px; background:var(--surface-2); border:1px solid var(--line); flex-shrink:0; background-size:cover; background-position:center; display:flex; align-items:center; justify-content:center; font-size:30px; color:var(--muted)}
+  .file-label{display:inline-block; margin-top:8px; font-size:12.5px; color:var(--accent); cursor:pointer; font-weight:600}
+  .file-label:hover{text-decoration:underline}
+
+  /* ---------- Recipe view ---------- */
+  .recipe-hero{position:relative; aspect-ratio:16/8; background:linear-gradient(135deg,#f0e3d4,#e7d4c0); display:flex; align-items:center; justify-content:center}
+  .recipe-hero img{position:absolute; inset:0; width:100%; height:100%; object-fit:cover}
+  .recipe-hero .emoji{font-size:80px}
+  .recipe-hero .pill{top:14px; left:14px}
+  .recipe-meta{display:flex; gap:20px; flex-wrap:wrap; padding:16px 0; border-bottom:1px solid var(--line); margin-bottom:18px; color:var(--muted); font-size:13.5px}
+  .recipe-meta b{color:var(--ink); font-weight:600}
+  .recipe-desc{font-size:15px; margin:0 0 20px; color:#5c5249}
+  .recipe-cols{display:grid; grid-template-columns:1fr 1.3fr; gap:26px}
+  .recipe-cols h4{font-family:var(--serif); font-weight:600; font-size:17px; margin:0 0 12px; display:flex; align-items:center; gap:8px}
+  .ingredients{list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:9px}
+  .ingredients li{display:flex; gap:9px; font-size:14px; align-items:flex-start}
+  .ingredients li::before{content:""; width:7px; height:7px; border-radius:50%; background:var(--accent); margin-top:7px; flex-shrink:0}
+  .steps{list-style:none; padding:0; margin:0; counter-reset:step; display:flex; flex-direction:column; gap:14px}
+  .steps li{display:flex; gap:12px; font-size:14px; counter-increment:step}
+  .steps li::before{content:counter(step); flex-shrink:0; width:26px; height:26px; border-radius:50%; background:var(--accent-soft); color:var(--accent-dark); font-weight:700; font-size:13px; display:flex; align-items:center; justify-content:center}
+  .schedule-box{margin-top:22px; padding:16px; background:var(--surface-2); border:1px solid var(--line); border-radius:14px}
+  .schedule-box h4{margin:0 0 12px; font-family:var(--serif); font-size:16px}
+  .schedule-row{display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap}
+  .schedule-row .field{margin:0; flex:1; min-width:120px}
+
+  /* ---------- Day modal ---------- */
+  .sched-list{display:flex; flex-direction:column; gap:8px; margin-bottom:18px}
+  .sched-item{display:flex; align-items:center; gap:10px; padding:10px 12px; border:1px solid var(--line); border-radius:11px; background:var(--surface-2)}
+  .sched-item .slot-tag{font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; padding:3px 8px; border-radius:6px; color:#fff}
+  .slot-tag.breakfast{background:var(--breakfast)} .slot-tag.lunch{background:var(--lunch)}
+  .slot-tag.dinner{background:var(--dinner)} .slot-tag.snack{background:var(--snack)}
+  .sched-item .name{font-weight:500; flex:1}
+  .sched-item .name.gone{color:var(--muted); font-style:italic; font-weight:400}
+  .sched-item .del{color:var(--muted); width:30px; height:30px; border-radius:8px; display:flex; align-items:center; justify-content:center}
+  .sched-item .del:hover{background:#fdecec; color:#c0392b}
+  /* .del is a fixed 30px square, which wraps a two-glyph label onto two lines */
+  .sched-item .del.batch-del{width:auto; padding:0 8px; gap:3px; font-size:12.5px; white-space:nowrap}
+  .add-sched{display:flex; gap:10px; align-items:flex-end; padding-top:16px; border-top:1px dashed var(--line); flex-wrap:wrap}
+  .add-sched .field{margin:0; flex:1; min-width:110px}
+
+  .muted-note{font-size:12.5px; color:var(--muted); text-align:center; margin-top:18px}
+  .data-intro{font-size:14px; color:#5c5249; margin:0 0 18px}
+  /* Says out loud that nothing is stored anywhere but here. Deliberately the
+     first thing in the Data panel, and deliberately not styled as a warning —
+     it is how the app works, not something going wrong. */
+  .callout{
+    background:var(--surface-2); border:1px solid var(--line); border-left:3px solid var(--accent);
+    border-radius:0 12px 12px 0; padding:13px 15px; margin:0 0 16px;
+  }
+  .callout strong{display:block; font-size:14px; margin-bottom:5px}
+  .callout p{margin:0; font-size:13px; line-height:1.55; color:#5c5249}
+  /* Lives in .modal-head, so no bottom margin — the head's own padding spaces it.
+     min-width:0 lets the tagline ellipsis rather than shove the ✕ off the edge. */
+  .about-head{display:flex; align-items:center; gap:12px; min-width:0}
+  .about-head .logo{width:34px; height:34px; flex:none}
+  .about-head > div{min-width:0}
+  .about-head span{display:block; font-size:13px; color:var(--muted); margin-top:1px; font-weight:400}
+  .about-body{margin:0; font-size:13.5px; line-height:1.6; color:#5c5249}
+  .about-repo{margin:12px 0 0; font-size:13px}
+  .about-repo a{color:var(--accent); font-weight:600; text-decoration:none}
+  .about-repo a:hover{text-decoration:underline}
+  .about-repo a::before{content:"↗ "; font-weight:400}
+  .data-actions{display:flex; gap:10px; flex-wrap:wrap}
+  .data-actions .btn{justify-content:center}
+  .data-sep{border:none; border-top:1px solid var(--line); margin:24px 0 16px}
+  .data-sub{font-family:var(--serif); font-weight:600; font-size:17px; margin:0 0 6px}
+  .od-auto{display:inline-flex; align-items:center; gap:8px; font-size:13px; font-weight:500; margin-top:14px; cursor:pointer}
+  .od-auto input{width:16px; height:16px; accent-color:var(--accent)}
+  .ai-box{background:var(--accent-soft); border:1px solid #eccab9; border-radius:13px; padding:13px 14px; margin-bottom:18px}
+  .ai-box-label{display:block; font-weight:600; font-size:13.5px; margin-bottom:8px; color:var(--accent-dark)}
+  .ai-box textarea{width:100%; padding:9px 11px; border:1px solid #eccab9; border-radius:9px; background:#fff; outline:none; resize:vertical; min-height:46px; font-size:13.5px; font-family:inherit}
+  .ai-box textarea:focus{border-color:var(--accent); box-shadow:0 0 0 3px rgba(199,93,60,.15)}
+  .ai-box-row{display:flex; align-items:center; gap:10px; margin-top:9px}
+  .ai-status{font-size:12.5px; color:var(--muted)}
+  .ai-status.ok{color:#3f7d54} .ai-status.warn{color:#c0392b}
+
+  /* ---------- cook mode ----------
+     The recipe already on screen, blown up full-bleed with everything you cannot
+     act on mid-cook stripped away. It restyles the *same* DOM rather than drawing
+     a second copy, so the servings scale, unit toggle and pantry badges carry over
+     and stay live — there is no parallel render to drift out of sync. */
+  .cook-hint{display:none}
+  #recipeCookExit, #recipePrintBtn{display:none}
+  body.cooking #recipeOverlay{padding:0; background:var(--bg); backdrop-filter:none}
+  body.cooking #recipeOverlay .modal{
+    max-width:none; min-height:100vh; border-radius:0; box-shadow:none; animation:none;
+    display:flex; flex-direction:column;
+    /* .modal is overflow:hidden normally (to clip its rounded corners), but that
+       makes it a clipping container and leaves the sticky footer nothing to stick
+       to — Done and Print would scroll off the bottom of a phone. Square corners
+       here mean nothing needs clipping anyway. */
+    overflow:visible;
+  }
+  body.cooking #recipeOverlay .modal-head,
+  body.cooking #recipeOverlay .modal-body{max-width:1080px; margin:0 auto; width:100%}
+  body.cooking #recipeOverlay .modal-head{padding:24px clamp(16px,5vw,56px) 0}
+  body.cooking #recipeOverlay .modal-body{flex:1; padding:10px clamp(16px,5vw,56px) 30px}
+  body.cooking #recipeTitle{font-size:clamp(24px,3.4vw,34px)}
+  /* reference material, not something you do anything with while cooking */
+  body.cooking .recipe-hero,
+  body.cooking .recipe-desc,
+  body.cooking .nutri-chips,
+  body.cooking .recipe-gallery,
+  body.cooking .recipe-source,
+  body.cooking .schedule-box,
+  body.cooking #rerollBtn,
+  body.cooking #recipeCookBtn,
+  body.cooking #recipeBatchBtn,
+  body.cooking #recipeDupBtn,
+  body.cooking #recipeEditBtn,
+  body.cooking #recipeOverlay .modal-foot [data-close]{display:none !important}
+  body.cooking #recipeCookExit, body.cooking #recipePrintBtn{display:inline-flex}
+  body.cooking .cook-hint{display:block; margin:0 0 20px; color:var(--muted); font-size:13.5px}
+  body.cooking #recipeOverlay .modal-foot{
+    position:sticky; bottom:0; justify-content:center;
+    padding:14px 16px calc(14px + env(safe-area-inset-bottom));
+  }
+  body.cooking .recipe-cols{grid-template-columns:1fr 1.45fr; gap:clamp(26px,4vw,52px)}
+  body.cooking .recipe-cols h4{font-size:20px}
+  body.cooking .ingredients{gap:4px}
+  body.cooking .steps{gap:10px}
+  /* tick a line off as you go — bigger hit areas, because this is read at arm's length */
+  body.cooking .ingredients li, body.cooking .steps li{
+    font-size:17px; line-height:1.5; cursor:pointer; border-radius:10px;
+    padding:7px 9px; margin:0 -9px; transition:opacity .15s, background .15s;
+  }
+  body.cooking .ingredients li:hover, body.cooking .steps li:hover{background:var(--surface-2)}
+  body.cooking .ingredients li::before{margin-top:11px}
+  body.cooking .steps li::before{width:30px; height:30px; font-size:14px}
+  body.cooking li.ticked{opacity:.42}
+  /* struck on the text only: the bullet and the step number stay legible */
+  body.cooking li.ticked > .tickable{text-decoration:line-through}
+
+  @media(max-width:640px){
+    .recipe-cols{grid-template-columns:1fr}
+    .toolbar h2{width:100%}
+    .day{min-height:84px}
+    .cal-grid,.weekdays{gap:5px}
+    header.app{padding:0 14px}
+    .brand h1{font-size:18px}
+    .tabs{flex-wrap:wrap; justify-content:center}
+    .tab{padding:7px 13px; font-size:13px}
+    /* the cook-mode two-column rule above out-specifies the generic one, so it
+       needs restating here or a phone would keep the split columns */
+    body.cooking .recipe-cols{grid-template-columns:1fr}
+    body.cooking #recipeOverlay .modal-head{padding-top:16px}
+  }
+
+  /* ---------- print ----------
+     Ctrl-P (or the cook-mode button) with a recipe open gives a plain card:
+     no app chrome, no photo, no buttons, black on white. :has() scopes the whole
+     block to "a recipe is open", so printing from any other view is left alone. */
+  @media print{
+    body:has(#recipeOverlay.open){background:#fff}
+    body:has(#recipeOverlay.open) header.app,
+    body:has(#recipeOverlay.open) main,
+    body:has(#recipeOverlay.open) .overlay:not(#recipeOverlay){display:none !important}
+    #recipeOverlay.open{position:static !important; display:block !important; padding:0 !important;
+      background:none !important; backdrop-filter:none; overflow:visible}
+    #recipeOverlay.open .modal{max-width:none !important; min-height:0 !important; box-shadow:none !important;
+      border-radius:0; animation:none; background:#fff}
+    #recipeOverlay.open .modal-head,
+    #recipeOverlay.open .modal-body{padding:0 !important; max-width:none !important}
+    /* photos, scheduling and every control: ink spent on things paper cannot do */
+    #recipeOverlay.open .recipe-hero,
+    #recipeOverlay.open .recipe-gallery,
+    #recipeOverlay.open .schedule-box,
+    #recipeOverlay.open .modal-foot,
+    #recipeOverlay.open .cook-hint,
+    #recipeOverlay.open .close,
+    #recipeOverlay.open .serv-btn,
+    #recipeOverlay.open .linkbtn,
+    #recipeOverlay.open .meta-btn,
+    #recipeOverlay.open .ing-have{display:none !important}
+    #recipeOverlay.open *{color:#000 !important; background:none !important; box-shadow:none !important; opacity:1 !important}
+    /* the universal reset above cannot reach pseudo-elements, so the step circles
+       keep their accent fill and brown numerals unless cleared by name */
+    #recipeOverlay.open .steps li::before{border:1px solid #000; background:none !important; color:#000 !important}
+    #recipeOverlay.open .ingredients li::before{background:#000 !important}
+    #recipeOverlay.open .recipe-cols{grid-template-columns:1fr 1.3fr; gap:22px}
+    #recipeOverlay.open li{break-inside:avoid; page-break-inside:avoid; cursor:auto !important}
+    #recipeOverlay.open .recipe-source{word-break:break-all; font-size:11px}
+    /* printing part-way through a cook should not print the strikethroughs */
+    #recipeOverlay.open .tickable{text-decoration:none !important}
+    @page{margin:14mm}
+  }

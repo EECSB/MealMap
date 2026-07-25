@@ -1,0 +1,3 @@
+# The working files use LF; keep it that way on this Windows machine
+# (global core.autocrlf=true would otherwise rewrite every line on checkout).
+* text=auto eol=lf

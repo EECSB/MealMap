@@ -1,0 +1,28 @@
+# Secrets — never commit. API keys live in browser localStorage, not in files,
+# but keep this here so a stray .env can't be added by accident.
+.env
+.env.*
+!.env.example
+
+# Windows / OS cruft
+Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Claude Code local (machine-specific) settings — launch.json IS tracked
+.claude/settings.local.json
+
+# Exported data — may contain personal meal/pantry data
+mealmap-*.json
+mealmap-*.xlsx
+
+# Deployment bundle — a build output, rebuilt on demand, and GitHub's own
+# "Download ZIP" already gives anyone the repo contents
+mealmap-site.zip

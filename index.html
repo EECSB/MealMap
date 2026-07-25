@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MealMap — Recipes &amp; meal planning</title>
+<!-- Favicon: same map-pin-with-cutlery mark as the header logo, inlined so the app stays a single file. -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><defs><linearGradient id='p' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%23e8a33a'/><stop offset='1' stop-color='%23c75d3c'/></linearGradient></defs><path d='M16 1.5C9.6 1.5 4.5 6.6 4.5 13c0 8.6 11.5 17.5 11.5 17.5S27.5 21.6 27.5 13C27.5 6.6 22.4 1.5 16 1.5z' fill='url(%23p)'/><g stroke='%23fff8f0' fill='none' stroke-linecap='round'><path d='M10.6 5.6v4.6M13 5.6v4.6M15.4 5.6v4.6M10.6 10.2h4.8' stroke-width='1.6'/><path d='M13 10.7v10.3M20.6 11.4v9.6' stroke-width='2.6'/></g><ellipse cx='20.6' cy='8.4' rx='2.9' ry='3.8' fill='%23fff8f0'/></svg>">
+<!-- Fonts are served from fonts/, not Google, so the app makes no third-party
+     requests at all: nothing to block behind a CSP, and no visitor IP handed to
+     anyone. fonts.css must come first — app.css uses the families. -->
+<link rel="stylesheet" href="css/fonts.css">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+
+<header class="app">
+  <div class="header-row">
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="MealMap">
+        <defs>
+          <linearGradient id="mmPin" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#e8a33a"/>
+            <stop offset="1" stop-color="#c75d3c"/>
+          </linearGradient>
+        </defs>
+        <path d="M16 1.5C9.6 1.5 4.5 6.6 4.5 13c0 8.6 11.5 17.5 11.5 17.5S27.5 21.6 27.5 13C27.5 6.6 22.4 1.5 16 1.5z" fill="url(#mmPin)"/>
+        <g stroke="#fff8f0" fill="none" stroke-linecap="round">
+          <path d="M10.6 5.6v4.6M13 5.6v4.6M15.4 5.6v4.6M10.6 10.2h4.8" stroke-width="1.6"/>
+          <path d="M13 10.7v10.3M20.6 11.4v9.6" stroke-width="2.6"/>
+        </g>
+        <ellipse cx="20.6" cy="8.4" rx="2.9" ry="3.8" fill="#fff8f0"/>
+      </svg>
+      <div>
+        <h1 data-i18n="brand_title">MealMap</h1>
+        <small data-i18n="brand_sub">Recipes &amp; meal planning</small>
+      </div>
+    </div>
+    <nav class="tabs">
+      <button class="tab active" data-view="menu" data-i18n="tab_menu">🍽️ Menu</button>
+      <button class="tab" data-view="pantry" data-i18n="tab_pantry">🥫 Pantry</button>
+      <button class="tab" data-view="shopping" data-i18n="tab_shop">🛒 Shopping</button>
+      <button class="tab" data-view="calendar" data-i18n="tab_calendar">📅 Calendar</button>
+    </nav>
+    <button class="hbtn" id="dataBtn" data-i18n="settings_btn">⚙️ Settings</button>
+  </div>
+</header>
+
+<main>
+  <!-- ============ MENU VIEW ============ -->
+  <section id="menuView" class="view active">
+    <div class="toolbar">
+      <h2 data-i18n="menu_title">Your Menu</h2>
+      <div class="search">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        <input type="text" id="searchInput" data-i18n-ph="search_ph" placeholder="Search meals or ingredients…">
+      </div>
+      <select class="filter" id="categoryFilter"></select>
+      <button class="btn ghost" id="favFilterBtn" data-i18n-title="fav_only" title="Favourites">☆</button>
+      <button class="btn ghost" id="randomBtn" data-i18n="random_btn">🎲 Random suggestion</button>
+      <button class="btn" id="addItemBtn" data-i18n="add_meal">＋ Add meal</button>
+    </div>
+    <div class="grid" id="menuGrid"></div>
+  </section>
+
+  <!-- ============ PANTRY VIEW ============ -->
+  <section id="pantryView" class="view">
+    <div class="toolbar">
+      <h2 data-i18n="pantry_title">Your Pantry</h2>
+      <div class="search">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        <input type="text" id="pantrySearch" data-i18n-ph="pantry_search_ph" placeholder="Search ingredients…">
+      </div>
+      <select class="filter" id="pantryCategoryFilter"></select>
+      <button class="btn" id="addPantryBtn" data-i18n="pantry_add">＋ Add ingredient</button>
+    </div>
+    <div class="pantry-list" id="pantryList"></div>
+  </section>
+
+  <!-- ============ SHOPPING VIEW ============ -->
+  <section id="shoppingView" class="view">
+    <div class="shop-grid">
+      <div class="shop-panel">
+        <div class="shop-head">
+          <h2 class="shop-h" data-i18n="shop_list_title">Shopping list</h2>
+          <div class="shop-head-actions">
+            <select id="shopPlanWeek" class="shop-week" data-i18n-title="shop_add_plan">
+              <option value="w0" data-i18n="week_this">This week</option>
+              <option value="w1" data-i18n="week_next">Next week</option>
+              <option value="d7" data-i18n="range_next7">Next 7 days</option>
+              <option value="d14" data-i18n="range_next14">Next 14 days</option>
+              <option value="m0" data-i18n="range_this_month">This month</option>
+              <option value="m1" data-i18n="range_next_month">Next month</option>
+              <option value="custom" data-i18n="range_custom">Custom range…</option>
+            </select>
+            <button class="btn ghost sm" id="shopPlanBtn" data-i18n="shop_add_plan">＋ From plan</button>
+            <button class="btn ghost sm" id="shopLowBtn" data-i18n="shop_add_low">Add low-stock</button>
+            <button class="btn ghost sm" id="shopClearBtn" data-i18n="shop_clear_checked">Clear checked</button>
+          </div>
+        </div>
+        <div class="shop-add">
+          <input type="text" id="shopInput" data-i18n-ph="shop_add_ph" placeholder="Add an item…">
+          <button class="btn" id="shopAddBtn" data-i18n="add_btn">＋ Add</button>
+        </div>
+        <div class="shop-range" id="shopRange" hidden>
+          <label data-i18n="range_from">From</label><input type="date" id="shopFrom">
+          <label data-i18n="range_to">to</label><input type="date" id="shopTo">
+        </div>
+        <p class="muted-note" id="shopFeedback" style="margin:8px 0 0; min-height:16px"></p>
+        <div class="shop-list" id="shopList"></div>
+      </div>
+
+      <div class="shop-panel">
+        <div class="shop-head">
+          <h2 class="shop-h" data-i18n="avail_title">Meals you can make</h2>
+          <select class="filter" id="mealAvailFilter">
+            <option value="all" data-i18n="avail_filter_all">All meals</option>
+            <option value="ready" data-i18n="avail_filter_ready">Ready to cook</option>
+          </select>
+        </div>
+        <div class="avail-list" id="availList"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ CALENDAR VIEW ============ -->
+  <section id="calendarView" class="view">
+    <div class="cal-head">
+      <h2 id="monthLabel">Month</h2>
+      <div class="cal-nav">
+        <button class="nav-btn" id="prevMonth" data-i18n-title="prev_month" title="Previous month">‹</button>
+        <button class="nav-btn" id="nextMonth" data-i18n-title="next_month" title="Next month">›</button>
+      </div>
+      <button class="btn ghost sm" id="todayBtn" data-i18n="today">Today</button>
+      <div class="legend">
+        <span><i class="dot breakfast"></i><span data-i18n="slot_breakfast">Breakfast</span></span>
+        <span><i class="dot lunch"></i><span data-i18n="slot_lunch">Lunch</span></span>
+        <span><i class="dot dinner"></i><span data-i18n="slot_dinner">Dinner</span></span>
+        <span><i class="dot snack"></i><span data-i18n="slot_snack">Snack</span></span>
+      </div>
+    </div>
+    <div class="weekdays" id="weekdays"></div>
+    <div class="cal-grid" id="calendarGrid"></div>
+    <p class="muted-note" data-i18n="cal_tip">Tip: click any day to add meals from your menu.</p>
+  </section>
+</main>
+
+<!-- ============ ITEM FORM MODAL ============ -->
+<div class="overlay" id="itemOverlay">
+  <div class="modal">
+    <div class="modal-head">
+      <h3 id="itemFormTitle">Add meal</h3>
+      <button class="close" data-close>✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="itemId">
+      <div class="ai-box">
+        <label class="ai-box-label" data-i18n="ai_fill_title">✨ Fill from a recipe</label>
+        <textarea id="aiInput" rows="2" data-i18n-ph="ai_input_ph" placeholder="Paste a recipe (text) — or a link to a recipe page…"></textarea>
+        <div class="ai-box-row">
+          <button class="btn" id="aiFillBtn" data-i18n="ai_fill_btn">✨ Auto-fill</button>
+          <span class="ai-status" id="aiFillStatus"></span>
+        </div>
+      </div>
+      <div class="field">
+        <label data-i18n="f_name">Name</label>
+        <input type="text" id="f_name" data-i18n-ph="f_name_ph" placeholder="e.g. Creamy Mushroom Pasta">
+      </div>
+      <div class="row">
+        <div class="field">
+          <label data-i18n="f_category">Category</label>
+          <input type="text" id="f_category" list="catList" data-i18n-ph="f_category_ph" placeholder="e.g. Main, Breakfast, Dessert">
+          <datalist id="catList"></datalist>
+        </div>
+        <div class="field" style="max-width:120px">
+          <label data-i18n="f_emoji">Emoji</label>
+          <input type="text" id="f_emoji" placeholder="🍝" maxlength="4">
+        </div>
+      </div>
+      <div class="row">
+        <div class="field"><label><span data-i18n="f_time">Prep time</span> <span class="hint" data-i18n="min">min</span></label><input type="number" id="f_time" min="0" placeholder="30"></div>
+        <div class="field"><label data-i18n="f_servings">Servings</label><input type="number" id="f_servings" min="0" placeholder="4"></div>
+      </div>
+      <div class="field">
+        <label><span data-i18n="f_photo">Photos</span> <span class="hint" data-i18n="f_photo_hint">— drop images here, paste a link, or upload</span></label>
+        <div class="img-pick" id="imgDrop">
+          <div class="img-preview" id="imgPreview">🖼️</div>
+          <div style="flex:1">
+            <input type="text" id="f_image" data-i18n-ph="f_image_ph" placeholder="https://… image link">
+            <input type="file" id="f_file" accept="image/*" multiple hidden>
+            <label class="file-label" for="f_file" data-i18n="upload">📁 Upload from device</label>
+          </div>
+        </div>
+        <div class="img-strip" id="imgStrip"></div>
+      </div>
+      <div class="field">
+        <label data-i18n="f_source">Original recipe link</label>
+        <input type="text" id="f_source" data-i18n-ph="f_source_ph" placeholder="https://… where this recipe came from">
+      </div>
+      <div class="field">
+        <label><span data-i18n="f_nutrition">Nutrition</span> <span class="hint" data-i18n="f_nutrition_hint">— per serving, optional</span></label>
+        <div class="nutri-row">
+          <input type="text" id="f_kcal"    data-i18n-ph="f_kcal_ph"    placeholder="kcal">
+          <input type="text" id="f_protein" data-i18n-ph="f_protein_ph" placeholder="protein">
+          <input type="text" id="f_carbs"   data-i18n-ph="f_carbs_ph"   placeholder="carbs">
+          <input type="text" id="f_fat"     data-i18n-ph="f_fat_ph"     placeholder="fat">
+        </div>
+      </div>
+      <div class="field">
+        <label data-i18n="f_desc">Short description</label>
+        <textarea id="f_desc" style="min-height:60px" data-i18n-ph="f_desc_ph" placeholder="A one-line description shown on the card."></textarea>
+      </div>
+      <div class="field">
+        <label><span data-i18n="f_ingredients">Ingredients</span> <span class="hint" data-i18n="one_per_line">— one per line</span></label>
+        <textarea id="f_ingredients" data-i18n-ph="f_ingredients_ph" placeholder="200g pasta&#10;2 cloves garlic&#10;1 cup cream"></textarea>
+      </div>
+      <div class="field">
+        <label><span data-i18n="f_steps">Instructions</span> <span class="hint" data-i18n="one_step_per_line">— one step per line</span></label>
+        <textarea id="f_steps" data-i18n-ph="f_steps_ph" placeholder="Boil the pasta.&#10;Sauté the garlic.&#10;Combine and serve."></textarea>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" data-close data-i18n="cancel">Cancel</button>
+      <button class="btn" id="saveItemBtn" data-i18n="save_meal">Save meal</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ BATCH COOK MODAL ============ -->
+<div class="overlay" id="batchOverlay">
+  <div class="modal">
+    <div class="modal-head">
+      <h3 data-i18n="batch_cook">🍲 Batch cook</h3>
+      <button class="close" data-close>✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="batch-meal" id="batchMealName"></div>
+      <p class="data-intro" data-i18n="batch_intro">Cook it once and eat it over several days. The days stay linked, so the calendar shows which are leftovers and you can clear the lot in one go.</p>
+      <div class="add-sched" style="padding-top:0; border-top:none">
+        <div class="field"><label data-i18n="batch_cook_on">Cook on</label><input type="date" id="b_date"></div>
+        <div class="field"><label data-i18n="slot">Slot</label>
+          <select id="b_slot">
+            <option value="breakfast" data-i18n="slot_breakfast">Breakfast</option>
+            <option value="lunch" data-i18n="slot_lunch">Lunch</option>
+            <option value="dinner" selected data-i18n="slot_dinner">Dinner</option>
+            <option value="snack" data-i18n="slot_snack">Snack</option>
+          </select>
+        </div>
+        <div class="field" style="flex:none">
+          <label data-i18n="batch_portions">Makes</label>
+          <div class="serv-step" style="height:38px">
+            <button type="button" class="serv-btn" data-batchp="-1">−</button>
+            <b id="b_portions">4</b>
+            <span style="font-size:13px; color:var(--muted)" data-i18n="batch_meals">meals</span>
+            <button type="button" class="serv-btn" data-batchp="1">+</button>
+          </div>
+        </div>
+      </div>
+      <h4 class="batch-sub" data-i18n="batch_days_head">Then eat it on</h4>
+      <div id="batchDays"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" data-close data-i18n="cancel">Cancel</button>
+      <button class="btn" id="b_create" data-i18n="batch_create">Schedule batch</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ CONFIRM MODAL ============ -->
+<div class="overlay" id="confirmOverlay">
+  <div class="modal" style="max-width:430px">
+    <div class="modal-body" style="padding-top:26px">
+      <p id="confirmText" style="margin:0 0 20px; font-size:15px; line-height:1.55"></p>
+      <div class="data-actions" style="justify-content:flex-end">
+        <button class="btn ghost" id="confirmNo" data-i18n="cancel">Cancel</button>
+        <button class="btn danger" id="confirmYes">Delete</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ RECIPE MODAL ============ -->
+<div class="overlay" id="recipeOverlay">
+  <div class="modal wide">
+    <div class="recipe-hero" id="recipeHero"></div>
+    <div class="modal-head" style="border-bottom:none; padding-bottom:0">
+      <h3 id="recipeTitle"></h3>
+      <button class="close" data-close>✕</button>
+    </div>
+    <div class="modal-body" style="padding-top:8px">
+      <div class="recipe-meta" id="recipeMeta"></div>
+      <p class="cook-hint" id="cookHint"></p>
+      <p class="recipe-desc" id="recipeDesc"></p>
+      <div class="nutri-chips" id="recipeNutrition"></div>
+      <div class="recipe-gallery" id="recipeGallery"></div>
+      <a class="recipe-source" id="recipeSource" target="_blank" rel="noopener noreferrer"></a>
+      <div class="recipe-cols">
+        <div>
+          <h4 data-i18n="ing_head">🧺 Ingredients</h4>
+          <ul class="ingredients" id="recipeIngredients"></ul>
+        </div>
+        <div>
+          <h4 data-i18n="steps_head">👩‍🍳 Instructions</h4>
+          <ol class="steps" id="recipeSteps"></ol>
+        </div>
+      </div>
+      <div class="schedule-box">
+        <h4 data-i18n="add_to_cal">📅 Add to calendar</h4>
+        <div class="schedule-row">
+          <div class="field"><label data-i18n="date">Date</label><input type="date" id="r_date"></div>
+          <div class="field"><label data-i18n="slot">Slot</label>
+            <select id="r_slot">
+              <option value="breakfast" data-i18n="slot_breakfast">Breakfast</option>
+              <option value="lunch" data-i18n="slot_lunch">Lunch</option>
+              <option value="dinner" selected data-i18n="slot_dinner">Dinner</option>
+              <option value="snack" data-i18n="slot_snack">Snack</option>
+            </select>
+          </div>
+          <button class="btn" id="r_schedule" data-i18n="schedule">Schedule</button>
+        </div>
+        <p class="muted-note" id="r_feedback" style="text-align:left; margin:10px 0 0; min-height:16px"></p>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" id="rerollBtn" style="margin-right:auto; display:none" data-i18n="reroll_btn">🎲 Another</button>
+      <button class="btn ghost" id="recipeBatchBtn" data-i18n="batch_cook">🍲 Batch cook</button>
+      <button class="btn ghost" id="recipeCookBtn" data-i18n="cook_mode">▤ Cook mode</button>
+      <button class="btn ghost" id="recipeDupBtn" data-i18n="duplicate">⧉ Duplicate</button>
+      <button class="btn ghost" id="recipeEditBtn" data-i18n="edit">✎ Edit</button>
+      <button class="btn ghost" data-close data-i18n="close">Close</button>
+      <button class="btn ghost" id="recipePrintBtn" data-i18n="print_recipe">🖨 Print</button>
+      <button class="btn" id="recipeCookExit" data-i18n="cook_exit">✓ Done</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ DAY MODAL ============ -->
+<div class="overlay" id="dayOverlay">
+  <div class="modal">
+    <div class="modal-head">
+      <h3 id="dayTitle">Day</h3>
+      <button class="close" data-close>✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="sched-list" id="schedList"></div>
+      <div class="add-sched">
+        <div class="field"><label data-i18n="dish">Meal</label><select id="d_meal"></select></div>
+        <div class="field" style="max-width:140px"><label data-i18n="slot">Slot</label>
+          <select id="d_slot">
+            <option value="breakfast" data-i18n="slot_breakfast">Breakfast</option>
+            <option value="lunch" data-i18n="slot_lunch">Lunch</option>
+            <option value="dinner" selected data-i18n="slot_dinner">Dinner</option>
+            <option value="snack" data-i18n="slot_snack">Snack</option>
+          </select>
+        </div>
+        <button class="btn" id="d_add" data-i18n="add_btn">＋ Add</button>
+        <button class="btn ghost" id="d_surprise" data-i18n="surprise_day">🎲 Surprise me</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ PANTRY ITEM MODAL ============ -->
+<div class="overlay" id="pantryOverlay">
+  <div class="modal">
+    <div class="modal-head">
+      <h3 id="pantryFormTitle">Add ingredient</h3>
+      <button class="close" data-close>✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="pantryItemId">
+      <div class="field">
+        <label data-i18n="p_name">Name</label>
+        <input type="text" id="p_name" data-i18n-ph="p_name_ph" placeholder="e.g. Flour">
+      </div>
+      <div class="row">
+        <div class="field"><label data-i18n="p_qty">Quantity</label><input type="text" id="p_qty" data-i18n-ph="p_qty_ph" placeholder="e.g. 500 g, 6, 2 L"></div>
+        <div class="field" style="max-width:120px"><label data-i18n="f_emoji">Emoji</label><input type="text" id="p_emoji" placeholder="🥫" maxlength="4"></div>
+      </div>
+      <div class="field">
+        <label data-i18n="p_category">Category</label>
+        <input type="text" id="p_category" list="pCatList" data-i18n-ph="p_category_ph" placeholder="e.g. Baking, Dairy, Produce">
+        <datalist id="pCatList"></datalist>
+      </div>
+      <label class="od-auto"><input type="checkbox" id="p_low"> <span data-i18n="p_low">Running low (need to buy)</span></label>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" data-close data-i18n="cancel">Cancel</button>
+      <button class="btn" id="savePantryBtn" data-i18n="p_save">Save ingredient</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ DATA / SHARING MODAL ============ -->
+<div class="overlay" id="dataOverlay">
+  <div class="modal">
+    <!-- The brand mark and what the app is, in place of a "Settings" heading that
+         only ever repeated the button you pressed to get here. -->
+    <div class="modal-head">
+      <div class="about-head">
+        <svg class="logo" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="MealMap">
+          <defs>
+            <linearGradient id="mmPinAbout" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#e8a33a"/>
+              <stop offset="1" stop-color="#c75d3c"/>
+            </linearGradient>
+          </defs>
+          <path d="M16 1.5C9.6 1.5 4.5 6.6 4.5 13c0 8.6 11.5 17.5 11.5 17.5S27.5 21.6 27.5 13C27.5 6.6 22.4 1.5 16 1.5z" fill="url(#mmPinAbout)"/>
+          <g stroke="#fff8f0" fill="none" stroke-linecap="round">
+            <path d="M10.6 5.6v4.6M13 5.6v4.6M15.4 5.6v4.6M10.6 10.2h4.8" stroke-width="1.6"/>
+            <path d="M13 10.7v10.3M20.6 11.4v9.6" stroke-width="2.6"/>
+          </g>
+          <ellipse cx="20.6" cy="8.4" rx="2.9" ry="3.8" fill="#fff8f0"/>
+        </svg>
+        <div>
+          <h3 data-i18n="brand_title">MealMap</h3>
+          <span data-i18n="about_tagline">Recipes, a pantry, a shopping list that writes itself, and a calendar.</span>
+        </div>
+      </div>
+      <button class="close" data-close>✕</button>
+    </div>
+    <div class="modal-body">
+      <p class="about-body" data-i18n="about_body">Keep your recipes, note what you have in, plan the week, and let the shopping list build itself from the plan — it adds up quantities and leaves out what is already in your pantry. Cook mode gives you one recipe full-screen with the screen kept awake. Everything is free and yours; there is no account.</p>
+      <!-- The only place the repo URL appears. Change it here if the repo moves. -->
+      <p class="about-repo">
+        <a href="https://github.com/EECSB/MealMap" target="_blank" rel="noopener noreferrer" data-i18n="about_repo">Source code on GitHub</a>
+      </p>
+      <hr class="data-sep">
+      <div class="pref">
+        <div class="pref-row">
+          <span class="pref-label" data-i18n="pref_language">Language</span>
+          <div class="langpick" id="langPick">
+            <button type="button" class="langpick-btn" id="langPickBtn" aria-haspopup="listbox" aria-expanded="false"></button>
+            <div class="langpick-menu" id="langPickMenu" role="listbox" hidden></div>
+          </div>
+        </div>
+        <div class="pref-row">
+          <span class="pref-label" data-i18n="pref_units">Units</span>
+          <div class="seg" id="unitToggle">
+            <button class="unit seg-btn active" data-unit="metric" data-i18n="units_metric">Metric</button>
+            <button class="unit seg-btn" data-unit="imperial" data-i18n="units_imperial">Imperial</button>
+          </div>
+        </div>
+      </div>
+      <hr class="data-sep">
+      <h4 class="data-sub" data-i18n="ai_title">✨ AI assistant</h4>
+      <p class="muted-note" style="text-align:left; margin:0 0 14px" data-i18n="ai_note">Connect Claude, ChatGPT or Gemini to auto-fill recipes. Your key is stored only in this browser.</p>
+      <div class="row">
+        <div class="field"><label data-i18n="ai_provider">Provider</label>
+          <select id="aiProvider">
+            <option value="anthropic" data-i18n="ai_provider_anthropic">Claude (Anthropic)</option>
+            <option value="openai" data-i18n="ai_provider_openai">ChatGPT (OpenAI)</option>
+            <option value="gemini" data-i18n="ai_provider_gemini">Gemini (Google)</option>
+          </select>
+        </div>
+        <div class="field"><label><span data-i18n="ai_model">Model</span> <span class="hint" data-i18n="ai_model_hint">blank = recommended default</span></label><input type="text" id="aiModel" placeholder="claude-opus-5"></div>
+      </div>
+      <div class="field">
+        <label data-i18n="ai_key">API key</label>
+        <div class="key-row">
+          <input type="password" id="aiKey" data-i18n-ph="ai_key" placeholder="API key">
+          <!-- Test connection sits next to the key because it is what you want the
+               moment you have pasted one. Disconnect used to live here and was the
+               more prominent of the two despite being the rarer action; clearing the
+               field and tabbing out already removes the stored key. -->
+          <button class="btn ghost sm" id="aiTestBtn" data-i18n="ai_test">Test connection</button>
+        </div>
+      </div>
+      <p class="muted-note" id="aiStatus" style="text-align:left; min-height:16px; margin-top:8px"></p>
+
+      <hr class="data-sep">
+      <h4 class="data-sub" data-i18n="data_title">Data &amp; sharing</h4>
+      <!-- People assume an app remembers them. This one has nowhere to remember
+           them, so it has to say so before they lose a year of recipes. -->
+      <div class="callout">
+        <strong data-i18n="nobackend_title">Your data lives in this browser</strong>
+        <p data-i18n="nobackend_body">There is no account and no server — nothing leaves this device unless you set up sync below. Clearing your browsing data, switching browser, or moving to another device starts you over. Keep a copy: export a file, or link one below and it stays up to date on its own.</p>
+      </div>
+      <p class="data-intro" data-i18n="data_intro">Export your meals and meal-plan as a file, then drop it in Google Drive or OneDrive to back it up or share it.</p>
+      <div class="data-actions">
+        <button class="btn ghost" id="exportJsonBtn" data-i18n="export_json">⬇ Export JSON</button>
+        <button class="btn ghost" id="importJsonBtn" data-i18n="import_json">⬆ Import JSON</button>
+        <button class="btn ghost" id="exportExcelBtn" data-i18n="export_excel">⬇ Export Excel</button>
+        <input type="file" id="importFile" accept="application/json,.json" hidden>
+      </div>
+      <p class="muted-note" style="text-align:left; margin-top:16px" data-i18n="share_hint">JSON keeps everything exactly; Excel is a readable copy. Import replaces current data.</p>
+
+      <hr class="data-sep">
+      <h4 class="data-sub" data-i18n="fs_title">💾 Keep a file up to date</h4>
+      <p class="muted-note" style="text-align:left; margin:0 0 14px" data-i18n="fs_note">Pick a file in a folder your cloud already syncs — OneDrive, Dropbox, Drive, iCloud — and this keeps it current. No account and no setup: whatever syncs that folder does the rest.</p>
+      <p class="muted-note" id="fsUnsupported" style="text-align:left" hidden data-i18n="fs_unsupported">This needs Chrome, Edge or Opera on a computer — other browsers do not offer it yet. Use Export and Import above, or OneDrive below.</p>
+      <div class="data-actions" id="fsActions">
+        <button class="btn" id="fsPick" data-i18n="fs_pick">📄 Choose a file</button>
+        <button class="btn ghost" id="fsLoad" data-i18n="fs_load">⬇ Load now</button>
+        <button class="btn ghost" id="fsSave" data-i18n="fs_save">⬆ Save now</button>
+        <button class="btn ghost" id="fsForget" data-i18n="fs_forget">Unlink</button>
+      </div>
+      <label class="od-auto" id="fsAutoLabel"><input type="checkbox" id="fsAuto"> <span data-i18n="fs_auto">Keep it up to date automatically</span></label>
+      <p class="muted-note" id="fsStatus" style="text-align:left; min-height:16px; margin-top:10px"></p>
+
+      <hr class="data-sep">
+      <h4 class="data-sub" data-i18n="od_title">☁ OneDrive live sync</h4>
+      <p class="muted-note" style="text-align:left; margin:0 0 4px" data-i18n="od_note">Sign in to keep everyone on the same data automatically. Needs one-time setup: a hosted link and a Microsoft app ID.</p>
+      <!-- Links to the guide in the repo, not to a file beside index.html:
+           deployment is index.html on its own, so a relative path would 404. -->
+      <p class="about-repo" style="margin:0 0 14px">
+        <a href="https://github.com/EECSB/MealMap/blob/master/docs/ONEDRIVE-SETUP.md" target="_blank" rel="noopener noreferrer" data-i18n="od_guide">Setup guide</a>
+      </p>
+      <div class="field"><label data-i18n="od_clientid">Microsoft app (client) ID</label><input type="text" id="odClientId" placeholder="00000000-0000-0000-0000-000000000000"></div>
+      <div class="field"><label><span data-i18n="od_sharelink">Shared file link</span> <span class="hint" data-i18n="od_sharelink_hint">(from the owner; leave blank if you are the owner)</span></label><input type="text" id="odShareUrl" placeholder="https://1drv.ms/…"></div>
+      <div class="data-actions">
+        <button class="btn" id="odConnect" data-i18n="od_connect">Connect OneDrive</button>
+        <button class="btn ghost" id="odSetup" data-i18n="od_setup">Set up shared file</button>
+        <button class="btn ghost" id="odPull" data-i18n="od_load">Load now</button>
+        <button class="btn ghost" id="odPush" data-i18n="od_save">Save now</button>
+      </div>
+      <label class="od-auto"><input type="checkbox" id="odAuto"> <span data-i18n="od_auto">Auto-sync changes</span></label>
+      <p class="muted-note" id="odStatus" style="text-align:left; min-height:16px; margin-top:10px"></p>
+    </div>
+  </div>
+</div>
+
+<script src="js/i18n.js"></script>
+<script src="js/core.js"></script>
+<script src="js/menu.js"></script>
+<script src="js/recipe.js"></script>
+<script src="js/calendar.js"></script>
+<script src="js/pantry.js"></script>
+<script src="js/shopping.js"></script>
+<script src="js/sync.js"></script>
+<script src="js/ai.js"></script>
+</body>
+</html>

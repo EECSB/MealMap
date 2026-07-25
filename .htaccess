@@ -1,0 +1,41 @@
+# Cache policy for the deployed app.
+#
+# Apache and LiteSpeed read this file. Other hosts (nginx, S3, GitHub Pages,
+# Netlify) ignore it entirely and need the same policy expressed their own way.
+#
+# The problem it solves: none of the filenames here are content-hashed, so a
+# long cache on index.html or js/ cannot be busted from inside the app. The
+# host was serving them with max-age=7776000 — 90 days, no ETag — which meant
+# a returning visitor kept the old app for three months without so much as
+# asking the server.
+#
+# Staleness is the obvious half. The sharper half is mixing: index.html and the
+# js/ files are fetched at slightly different moments, so their caches expire at
+# different moments too, and a visitor can end up running a new index.html
+# against stale js/ (or the reverse). Right now that is harmless. The first
+# update that adds a <script> tag or renames a translation key, it breaks
+# silently — and a bug report from that will not mention caching.
+#
+# So: revalidate the code every time, and cache the fonts, which are the only
+# files here that genuinely never change.
+
+<IfModule mod_headers.c>
+  # Wrapped, because a host without mod_headers answers an unknown directive
+  # with a 500 — that would take the whole app down rather than just skipping
+  # the policy it could not apply.
+
+  # no-cache does not mean "do not store", it means "revalidate before use", so
+  # a repeat visit costs a 304 rather than a re-download. lib/ is deliberately
+  # included: those two files are large but load only on demand, and a stale
+  # MSAL would be worse than one conditional request.
+  <FilesMatch "\.(html|css|js)$">
+    Header set Cache-Control "no-cache, must-revalidate"
+  </FilesMatch>
+
+  # A year, but deliberately NOT immutable. These filenames are not hashed
+  # either, so if a subset is ever regenerated under the same name, a reload
+  # still has to be able to pick it up.
+  <FilesMatch "\.woff2$">
+    Header set Cache-Control "public, max-age=31536000"
+  </FilesMatch>
+</IfModule>
