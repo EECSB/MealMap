@@ -488,6 +488,30 @@
   .ai-status{font-size:12.5px; color:var(--muted)}
   .ai-status.ok{color:#3f7d54} .ai-status.warn{color:#c0392b}
 
+  /* ---------- share the shopping list ----------
+     The preview is the exact text every one of the five routes hands out, so it
+     is monospaced and boxed: it should read as the thing being sent rather than
+     as more page copy. */
+  .share-preview{
+    margin:0 0 14px; padding:13px 15px; max-height:220px; overflow:auto;
+    background:var(--surface-2); border:1px solid var(--line); border-radius:12px;
+    font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size:12.5px; line-height:1.7; white-space:pre-wrap; overflow-wrap:anywhere;
+  }
+  .share-preview:empty{display:none}
+  .share-email{
+    padding:10px 12px; border:1px solid var(--line); border-radius:10px;
+    background:var(--surface); outline:none; transition:.15s;
+  }
+  .share-email:focus{border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft)}
+  /* A white card behind the code, because the page background is not white and a
+     QR's quiet zone has to stay light for a scanner to find the code at all.
+     Capped in width so a dense one cannot swallow the modal — at the 97×97
+     ceiling this still leaves ~3px a module, which a phone camera manages. */
+  .qr-wrap{display:flex; justify-content:center; padding:14px; background:#fff; border:1px solid var(--line); border-radius:14px}
+  .qr-wrap[hidden]{display:none}
+  .qr{width:100%; max-width:320px; height:auto; display:block}
+
   /* ---------- cook mode ----------
      The recipe already on screen, blown up full-bleed with everything you cannot
      act on mid-cook stripped away. It restyles the *same* DOM rather than drawing

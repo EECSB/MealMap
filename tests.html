@@ -853,6 +853,176 @@ test('esc neutralises every HTML metacharacter', () => {
 });
 
 /* ============================================================
+   UNIT — QR code
+   ------------------------------------------------------------
+   The encoder is ours (js/qr.js), so "it renders something square" is not
+   evidence. Two things are checked that self-consistency cannot fake:
+
+     - the capacity and alignment tables published in ISO/IEC 18004, which the
+       code derives rather than stores, so a slip in the derivation shows up as
+       a number that does not match the standard;
+     - a decoder, below, that reads a finished grid back the way a scanner
+       does. It rebuilds the function-module map from the version number alone,
+       verifies the format info against its BCH code and that both copies of it
+       agree, un-masks, de-interleaves, and checks every block's Reed-Solomon
+       syndromes are zero before it will hand back a string.
+
+   It shares the encoder's GF(256) arithmetic — that is just field maths — but
+   none of its layout, bit-packing or masking decisions.
+   ============================================================ */
+group('QR code');
+
+function qrDecode(qr){
+  const size = qr.size, ver = qr.version, m = qr.modules;
+  const fn = Array.from({length:size}, () => new Array(size).fill(false));
+  const mark = (x, y) => { if(x>=0 && x<size && y>=0 && y<size) fn[y][x] = true; };
+  [[3,3],[size-4,3],[3,size-4]].forEach(([cx,cy]) => {
+    for(let dy=-4;dy<=4;dy++) for(let dx=-4;dx<=4;dx++) mark(cx+dx, cy+dy);
+  });
+  for(let i=0;i<size;i++){ mark(6,i); mark(i,6); }
+  const ap = A.qrAlignPositions(ver), last = ap.length - 1;
+  ap.forEach((y,i) => ap.forEach((x,j) => {
+    if((i===0&&j===0) || (i===0&&j===last) || (i===last&&j===0)) return;
+    for(let dy=-2;dy<=2;dy++) for(let dx=-2;dx<=2;dx++) mark(x+dx, y+dy);
+  }));
+  for(let i=0;i<=8;i++){ mark(8,i); mark(i,8); }
+  for(let i=0;i<8;i++){ mark(size-1-i, 8); mark(8, size-1-i); }
+  if(ver >= 7) for(let i=0;i<18;i++){ mark(size-11+i%3, Math.floor(i/3)); mark(Math.floor(i/3), size-11+i%3); }
+
+  // Format info: read it, undo the 0x5412 mask, check its BCH(15,5) remainder.
+  const raw = [];
+  for(let i=0;i<=5;i++) raw.push(m[i][8]);
+  raw.push(m[7][8], m[8][8], m[8][7]);
+  for(let i=9;i<15;i++) raw.push(m[8][14-i]);
+  let fmt = 0; raw.forEach((b,i) => fmt |= b << i);
+  fmt ^= 0x5412;
+  let rem = fmt;
+  for(let i=14;i>=10;i--) if((rem >>> i) & 1) rem ^= 0x537 << (i-10);
+  eq(rem, 0, 'the format info fails its BCH check — a reader would give up here');
+  eq((fmt >>> 13) & 3, 0, 'the format info should declare error-correction level M');
+  const mask = (fmt >>> 10) & 7;
+  const copy2 = [];
+  for(let i=0;i<8;i++) copy2.push(m[8][size-1-i]);
+  for(let i=8;i<15;i++) copy2.push(m[size-15+i][8]);
+  let f2 = 0; copy2.forEach((b,i) => f2 |= b << i);
+  eq(f2 ^ 0x5412, fmt, 'the two format-info copies disagree — a damaged corner would cost the mask');
+
+  // Un-mask, then walk the zig-zag and read the codewords back.
+  const un = m.map(r => r.slice());
+  for(let y=0;y<size;y++) for(let x=0;x<size;x++) if(!fn[y][x] && A.QR_MASKS[mask](y,x)) un[y][x] ^= 1;
+  const bits = [];
+  for(let right = size-1; right >= 1; right -= 2){
+    if(right === 6) right = 5;
+    for(let v=0;v<size;v++) for(let j=0;j<2;j++){
+      const x = right - j, y = ((right+1) & 2) === 0 ? size-1-v : v;
+      if(!fn[y][x]) bits.push(un[y][x]);
+    }
+  }
+  const all = [];
+  for(let i=0;i+8<=bits.length;i+=8){ let v=0; for(let j=0;j<8;j++) v = (v<<1) | bits[i+j]; all.push(v); }
+  eq(all.length, A.qrTotalCodewords(ver), 'read back the wrong number of codewords');
+
+  // De-interleave, then insist every block is intact on its own.
+  const nb = A.QR_BLOCKS[ver], eccLen = A.QR_ECC_PER_BLOCK[ver], dataLen = A.qrDataCapacity(ver);
+  const shortLen = Math.floor(dataLen/nb), numShort = nb - (dataLen % nb);
+  const blocks = Array.from({length:nb}, (_, i) => ({ d:[], e:[], len: shortLen + (i < numShort ? 0 : 1) }));
+  let p = 0;
+  for(let i=0;i<=shortLen;i++) blocks.forEach(b => { if(i < b.len) b.d.push(all[p++]); });
+  for(let i=0;i<eccLen;i++) blocks.forEach(b => b.e.push(all[p++]));
+  eq(p, all.length, 'de-interleaving did not consume every codeword');
+  blocks.forEach((b, bi) => {
+    for(let j=0;j<eccLen;j++){
+      let s = 0;
+      for(const c of b.d.concat(b.e)) s = A.qrMul(s, A.QR_EXP[j]) ^ c;
+      eq(s, 0, 'block ' + bi + ' has a non-zero Reed-Solomon syndrome — this code would not decode');
+    }
+  });
+
+  const db = [];
+  [].concat(...blocks.map(b => b.d)).forEach(c => { for(let i=7;i>=0;i--) db.push((c >>> i) & 1); });
+  const take = n => { let v = 0; for(let i=0;i<n;i++) v = (v << 1) | db.shift(); return v; };
+  eq(take(4), 0b0100, 'the mode indicator should say byte mode');
+  const len = take(ver < 10 ? 8 : 16), out = [];
+  for(let i=0;i<len;i++) out.push(take(8));
+  return new TextDecoder().decode(Uint8Array.from(out));
+}
+
+test('capacities match the published byte-mode table for level M', () => {
+  // ISO/IEC 18004, versions 1-20. These are derived from the module count, not
+  // stored, so they either match the standard or the derivation is wrong.
+  eq(Array.from({length:20}, (_, i) => A.qrCapacityBytes(i+1)),
+     [14,26,42,62,84,106,122,152,180,213,251,287,331,362,412,450,504,560,624,666]);
+});
+test('total codewords per version match the published table', () => {
+  eq(Array.from({length:20}, (_, i) => A.qrTotalCodewords(i+1)),
+     [26,44,70,100,134,172,196,242,292,346,404,466,532,581,655,733,815,901,991,1085]);
+});
+test('alignment-pattern centres match the published table', () => {
+  eq(A.qrAlignPositions(1), [], 'version 1 has none');
+  eq(A.qrAlignPositions(7), [6,22,38]);
+  eq(A.qrAlignPositions(10), [6,28,50]);
+  eq(A.qrAlignPositions(15), [6,26,48,70]);
+  eq(A.qrAlignPositions(20), [6,34,62,90]);
+});
+test('the smallest version that fits is the one chosen', () => {
+  eq(A.qrEncode('A'.repeat(14)).version, 1);
+  eq(A.qrEncode('A'.repeat(15)).version, 2, 'one byte over version 1 has to step up');
+  eq(A.qrEncode('B'.repeat(180)).version, 9);
+  eq(A.qrEncode('B'.repeat(181)).version, 10, 'the character-count field widens from here');
+});
+test('a payload past the ceiling is refused rather than truncated', () => {
+  ok(A.qrEncode('D'.repeat(666)), '666 bytes is exactly version 20');
+  eq(A.qrEncode('D'.repeat(667)), null, 'dropping the tail would scan as a plausible wrong list');
+});
+test('256 bytes does not wrap the 8-bit character count', () => {
+  // Below version 10 the count field is 8 bits, so 256 cannot be counted there
+  // however much room the version has — unguarded it wraps to zero and the code
+  // scans as empty, which is the worst kind of wrong.
+  const text = 'C'.repeat(256);
+  eq(qrDecode(A.qrEncode(text)), text);
+});
+test('the patterns a scanner looks for are where they should be', () => {
+  const q = A.qrEncode('structure'), m = q.modules, s = q.size;
+  eq([m[3][3], m[3][s-4], m[s-4][3]], [1,1,1], 'the three finder centres are dark');
+  eq([m[3][5], m[5][3]], [0,0], 'the light ring inside each finder');
+  eq(m[7][3], 0, 'the separator between finder and data stays light');
+  eq(Array.from({length:s-16}, (_, i) => m[6][8+i]), Array.from({length:s-16}, (_, i) => i%2===0 ? 1 : 0),
+     'the horizontal timing pattern alternates, starting dark');
+  eq(Array.from({length:s-16}, (_, i) => m[8+i][6]), Array.from({length:s-16}, (_, i) => i%2===0 ? 1 : 0),
+     'the vertical timing pattern alternates, starting dark');
+  eq(m[s-8][8], 1, 'the module that is always dark');
+});
+test('a finished grid decodes back to the text it was made from', () => {
+  [ 'Milk',
+    '- 500 g flour',
+    'MealMap — Nakupovalni seznam\n- 3 pločevinke breskev\n- 480 g moke\n- 1 žlička soli',
+    '🛒 list ✓ done — 2 × eggs',
+    'A'.repeat(14), 'A'.repeat(15), 'B'.repeat(180), 'B'.repeat(181), 'D'.repeat(666)
+  ].forEach(text => eq(qrDecode(A.qrEncode(text)), text, 'round-trip failed for a ' + text.length + '-char payload'));
+});
+test('every version builds, fills exactly, and decodes', () => {
+  for(let v=1; v<=20; v++){
+    const head = 'v' + v + ':';
+    const payload = head + 'x'.repeat(A.qrCapacityBytes(v) - head.length);   // fills the version to the byte
+    const qr = A.qrEncode(payload);
+    ok(qr, 'version ' + v + ' did not encode');
+    eq(qr.version, v, 'a full version-' + v + ' payload should pick version ' + v);
+    eq(qrDecode(qr), payload, 'version ' + v + ' did not survive the round trip');
+  }
+});
+test('the SVG keeps its quiet zone and its contrast', () => {
+  const q = A.qrEncode('quiet zone'), svg = A.qrSvg(q, 'label');
+  eq(/viewBox="0 0 (\d+) \1"/.exec(svg)[1], String(q.size + 8), 'four light modules on every side, or a scanner may never find it');
+  eq((svg.match(/<path/g) || []).length, 1, 'one path, not a rect per module — thousands of elements are slow and show seams');
+  eq((svg.match(/h1v1h-1z/g) || []).length, q.modules.flat().filter(Boolean).length, 'every dark module is drawn');
+  ok(/fill="#fff"/.test(svg) && /fill="#000"/.test(svg), 'black on white');
+  notOk(/currentColor|var\(/.test(svg), 'never themed — the contrast is what makes it readable');
+});
+test('the label is escaped into the SVG', () => {
+  notOk(/<img/.test(A.qrSvg(A.qrEncode('x'), '<img src=x onerror=alert(1)>')), 'aria-label goes through esc()');
+});
+
+/* ============================================================
    UNIT — i18n
    ============================================================ */
 group('Translations');
@@ -1505,6 +1675,164 @@ test('"what can I cook" counts what the pantry is missing', () => {
 });
 
 /* ============================================================
+   E2E — sharing the shopping list
+   ------------------------------------------------------------
+   Five routes out, all carrying one string, so most of what matters is what
+   that string says. The rest is the panel following the app: a language or unit
+   change has to reach an open share panel, or someone reads imperial on screen
+   and gets metric on their phone.
+
+   Two buttons are deliberately not clicked here. Copy would take over the real
+   clipboard, and Email would ask the operating system to open a mail client
+   mid-run; both are tested through the pure function underneath instead.
+   ============================================================ */
+group('E2E — sharing the shopping list');
+const openShare = () => { A.openShare(); };
+
+test('the text is the list as shown: same order, same wording', () => {
+  resetFixture();
+  A.addShoppingItem('500 g flour');
+  A.addShoppingItem('2 cloves garlic');
+  eq(A.shopListText(false).split('\n').slice(2), ['- 500 g flour', '- 2 cloves garlic']);
+});
+test('the heading carries the app name, the list name and today', () => {
+  resetFixture();
+  A.addShoppingItem('Bread');
+  const head = A.shopListText(false).split('\n')[0];
+  ok(head.startsWith('MealMap — Shopping list · '), 'got: ' + head);
+  ok(head.includes(String(new Date().getFullYear())), 'the date should be in there: ' + head);
+});
+test('ticked items are left out by default, and marked when asked for', () => {
+  resetFixture();
+  A.addShoppingItem('Bread');
+  A.addShoppingItem('Cheese');
+  A.shopping[0].done = true;
+  eq(A.shopListText(false).split('\n').slice(2), ['- Cheese'], 'what is left to buy');
+  eq(A.shopListText(true).split('\n').slice(2), ['- Cheese', '✓ Bread'],
+     'ticked items sort to the end and keep a tick, so a paste still reads right');
+});
+test('the units toggle reaches the shared text', () => {
+  resetFixture();
+  A.addShoppingItem('500 g flour');
+  ok(/500 g/.test(A.shopListText(false)), 'metric to start with');
+  A.setUnits('imperial');
+  ok(/1\.1 lb/.test(A.shopListText(false)), 'reading imperial on screen must not send metric to the phone');
+  A.setUnits('metric');
+});
+test('an open share panel follows a change of units', () => {
+  resetFixture();
+  A.addShoppingItem('500 g flour');
+  openShare();
+  ok(/500 g/.test($('#sharePreview').textContent));
+  A.setUnits('imperial');
+  ok(/1\.1 lb/.test($('#sharePreview').textContent), 'renderShopping() should refresh the open panel');
+  A.setUnits('metric');
+  A.close(A.shareOverlay);
+});
+test('an open share panel follows a change of language', () => {
+  resetFixture();
+  A.addShoppingItem('Bread');
+  openShare();
+  ok(/Shopping list/.test($('#sharePreview').textContent));
+  A.setLang('sl');
+  ok(/Nakupovalni seznam/.test($('#sharePreview').textContent), 'the heading is translated too');
+  A.setLang('en');
+  A.close(A.shareOverlay);
+});
+test('an empty list and an all-ticked list are told apart', () => {
+  resetFixture();
+  openShare();
+  eq($('#sharePreview').textContent, '');
+  eq($('#shareEmpty').hidden, false);
+  eq($('#shareEmpty').textContent, A.I18N.en.share_empty);
+  ok($('#shareCopyBtn').disabled, 'nothing to copy');
+
+  A.addShoppingItem('Bread');
+  A.shopping[0].done = true;
+  A.renderShare();
+  eq($('#shareEmpty').textContent, A.I18N.en.share_all_done,
+     'saying "empty" with the answer sitting in a checkbox above it would be a lie');
+  ok($('#shareCopyBtn').disabled);
+
+  $('#shareDone').checked = true;
+  A.renderShare();
+  notOk($('#shareCopyBtn').disabled);
+  ok(/Bread/.test($('#sharePreview').textContent));
+  $('#shareDone').checked = false;
+  A.close(A.shareOverlay);
+});
+test('the QR code carries the exact text on screen', () => {
+  resetFixture();
+  ['500 g flour', '2 cloves garlic', '1 pločevinka paradižnika'].forEach(A.addShoppingItem);
+  openShare();
+  notOk($('#shareQrBox').hidden, 'a short list gets a code');
+  const text = A.shopListText(false);
+  eq(qrDecode(A.qrEncode(text)), text, 'what the phone reads is what the screen says');
+  eq($('#shareQrNote').textContent, A.I18N.en.share_qr_note);
+  A.close(A.shareOverlay);
+});
+test('a list too long for a code says so instead of drawing an unreadable one', () => {
+  resetFixture();
+  for(let i=0;i<60;i++) A.addShoppingItem('Item number ' + i + ' with a long-ish name');
+  openShare();
+  ok($('#shareQrBox').hidden, 'no code');
+  eq($('#shareQrNote').textContent, A.I18N.en.share_qr_long, 'and it points at the file instead');
+  notOk($('#shareTxtBtn').disabled, 'the way out stays available');
+  A.close(A.shareOverlay);
+});
+test('the mailto: puts the heading in the subject and the items in the body', () => {
+  resetFixture();
+  A.addShoppingItem('Bread');
+  const url = A.shareMailto(A.shopListText(false), 'someone@example.com');
+  ok(url.startsWith('mailto:someone@example.com?'), 'the address is not percent-encoded: ' + url);
+  const q = new URLSearchParams(url.slice(url.indexOf('?') + 1));
+  eq(q.get('subject'), A.shopListText(false).split('\n')[0]);
+  eq(q.get('body'), '- Bread', 'the body starts at the items, not a repeat of the subject');
+});
+test('the mailto: still works with no address — the mail app asks for one', () => {
+  resetFixture();
+  A.addShoppingItem('Bread');
+  ok(A.shareMailto(A.shopListText(false), '').startsWith('mailto:?subject='));
+});
+test('the text file is named and written from the same text', async () => {
+  resetFixture();
+  A.addShoppingItem('Bread');
+  openShare();
+  // Stubbed rather than clicked through — a real click downloads a file.
+  const real = A.downloadBlob;
+  let got = null;
+  A.downloadBlob = (blob, name) => { got = { blob, name }; };
+  try{
+    $('#shareTxtBtn').click();
+    ok(got, 'the button should have asked for a download');
+    ok(/^mealmap-shopping-\d{4}-\d{2}-\d{2}\.txt$/.test(got.name), 'got: ' + got.name);
+    eq(got.blob.type, 'text/plain;charset=utf-8', 'without the charset, accented items arrive mangled');
+    eq(await got.blob.text(), A.shopListText(false));
+  } finally { A.downloadBlob = real; A.close(A.shareOverlay); }
+});
+test('the OS share button is offered only where it exists', () => {
+  resetFixture();
+  openShare();
+  eq($('#shareSendBtn').hidden, !A.navigator.share,
+     'a dead button is worse than one fewer option, so it hides rather than disables');
+  A.close(A.shareOverlay);
+});
+test('sharing reads the list and changes nothing', async () => {
+  resetFixture();
+  A.addShoppingItem('Bread');
+  A.save(A.STORE.shopping);
+  const { changed } = await auditSave(async () => {
+    openShare();
+    $('#shareDone').checked = true;
+    A.renderShare();
+    $('#shareDone').checked = false;
+    A.renderShare();
+    A.close(A.shareOverlay);
+  });
+  eq(changed, [], 'looking at the list must not rewrite it');
+});
+
+/* ============================================================
    UNIT — storage
    ============================================================ */
 group('Storage');
@@ -1883,8 +2211,11 @@ test('no key means no request at all', async () => {
 
 group('AI — the settings panel');
 test('Test connection sits beside the key box, and Disconnect is gone', () => {
-  const row = $('.key-row');
-  ok(row.querySelector('#aiKey'), 'the key input');
+  // Reached from #aiKey rather than $('.key-row'): the class is a layout pattern
+  // and the share panel now uses it too, so "the first one in the document" is
+  // no longer the same thing as "the AI one".
+  const row = $('#aiKey').closest('.key-row');
+  ok(row, 'the key input should sit in a key row');
   ok(row.querySelector('#aiTestBtn'), 'Test connection should be the button next to it');
   notOk($('#aiForgetBtn'), 'the Disconnect button was removed');
   eq($$('#aiTestBtn').length, 1, 'and Test connection must not be duplicated');
@@ -2363,22 +2694,22 @@ test('auto-push stays off unless it is switched on and signed in', () => {
 group('Assembly');
 test('the scripts are classic and in-order, not modules', () => {
   const tags = [...WIN.document.querySelectorAll('script[src]')].filter(s => /\/js\//.test(s.src));
-  eq(tags.length, 9, 'expected nine app scripts');
+  eq(tags.length, 10, 'expected ten app scripts');
   tags.forEach(s => {
     notOk(s.type === 'module', s.src + ' is a module — that would isolate its scope and break everything below');
     notOk(s.defer, s.src + ' is deferred — order would stop being guaranteed');
     notOk(s.async, s.src + ' is async — order would stop being guaranteed');
   });
   eq(tags.map(s => s.src.split('/').pop()),
-     ['i18n.js','core.js','menu.js','recipe.js','calendar.js','pantry.js','shopping.js','sync.js','ai.js'],
-     'load order is the original code order; ai.js boots the app so it must stay last');
+     ['i18n.js','core.js','menu.js','recipe.js','calendar.js','pantry.js','qr.js','shopping.js','sync.js','ai.js'],
+     'load order is the original code order; qr.js is a library and sits before its one caller; ai.js boots the app so it must stay last');
 });
 test('every file lands in one shared global scope', () => {
   // If any of these came back undefined, that file had been isolated.
   const fromEachFile = {
     'i18n.js': 'I18N', 'core.js': 'STORES', 'menu.js': 'renderMenu', 'recipe.js': 'openRecipe',
-    'calendar.js': 'renderCalendar', 'pantry.js': 'PHRASES', 'shopping.js': 'combineIngredients',
-    'sync.js': 'syncPayload', 'ai.js': 'aiSystemPrompt'
+    'calendar.js': 'renderCalendar', 'pantry.js': 'PHRASES', 'qr.js': 'QR_BLOCKS',
+    'shopping.js': 'combineIngredients', 'sync.js': 'syncPayload', 'ai.js': 'aiSystemPrompt'
   };
   Object.entries(fromEachFile).forEach(([file, name]) =>
     ok(A[name] !== undefined, name + ' from ' + file + ' is not reachable — is that file a module now?'));

@@ -17,7 +17,13 @@ function addShoppingItem(name){
   const v=(name||'').trim(); if(!v || shopHas(v)) return false;
   shopping.push({id:uid(), name:v, done:false}); return true;
 }
-function renderShopping(){ renderShopList(); renderAvail(); }
+function renderShopping(){
+  renderShopList(); renderAvail();
+  // Both setLang() and setUnits() come through here, so an open share panel
+  // follows them instead of holding a list in the language or units you just
+  // switched away from.
+  if(shareOverlay && shareOverlay.classList.contains('open')) renderShare();
+}
 
 /* ---------- combining quantities ----------
    Two meals both needing garlic should give one shopping line, not two. Only
@@ -329,3 +335,153 @@ document.getElementById('shopPlanWeek').addEventListener('change', e=>{
   }
 });
 mealAvailFilter.addEventListener('change', renderAvail);
+
+/* ============================================================
+   SHARING THE LIST  —  getting it off this machine and into a pocket
+   ------------------------------------------------------------
+   "Share the shopping list" means something different depending on where you
+   are standing, so there are five ways out and they all carry the same text:
+
+     - Copy        the universal one; pastes into anything.
+     - Send to…    the OS share sheet (navigator.share). On a phone this is the
+                   real answer — WhatsApp, Messages, Notes, one tap. It does
+                   not exist on most desktops, so the button hides itself
+                   rather than sitting there dead.
+     - Email       a mailto: link. There is no back end and there is not going
+                   to be one, so the app cannot *send* mail. It hands a filled-in
+                   message to the user's own mail app and they press send —
+                   which also means nothing leaves the device unless they do.
+                   The address is remembered so "to myself" is one click; it is
+                   kept in this browser only and is not in the export.
+     - Text file   a .txt download. No length limit, works offline, works from
+                   file://. The fallback when anything else is too small.
+     - QR code     drawn here, offline (js/qr.js). Point the other phone's
+                   camera at the screen and the list is on it: no account, no
+                   network, nothing typed, and nothing sent to anybody's server.
+
+   The text is built from what is *on screen* — the same order renderShopList()
+   uses and through convUnits() — so a list read in imperial does not arrive on
+   the phone in metric. renderShopping() refreshes this panel while it is open,
+   which is what makes the language and unit toggles carry over for free.
+   ============================================================ */
+const shareOverlay = document.getElementById('shareOverlay');
+const shareDone = document.getElementById('shareDone');
+const shareEmailInput = document.getElementById('shareEmail');
+
+function shareIncludeDone(){ return !!(shareDone && shareDone.checked); }
+/* Ticked items keep a ✓ instead of a dash, rather than getting their own
+   section: it survives being pasted into any notes app, and the sort already
+   puts them at the end. */
+function shopListText(includeDone){
+  const lines = shopping.slice()
+    .sort((a,b)=>(a.done?1:0)-(b.done?1:0))
+    .filter(s=>includeDone || !s.done)
+    .map(s=>(s.done?'✓ ':'- ') + convUnits(s.name));
+  if(!lines.length) return '';
+  const when = new Date().toLocaleDateString(LOCALE[lang], {day:'numeric', month:'long', year:'numeric'});
+  return t('brand_title') + ' — ' + t('shop_list_title') + ' · ' + when + '\n\n' + lines.join('\n');
+}
+function shareStatus(msg, kind){
+  const el = document.getElementById('shareStatus');
+  if(!el) return;
+  el.textContent = msg || '';
+  el.className = 'ai-status' + (kind ? ' ' + kind : '');
+}
+function renderShare(){
+  const text = shopListText(shareIncludeDone());
+  const empty = !text;
+  document.getElementById('sharePreview').textContent = text;
+  // Two different kinds of nothing: an empty list, and a list where everything
+  // is already ticked off and the box above is unticked. Saying "empty" for the
+  // second one would be a lie with the answer sitting right above it.
+  const hint = document.getElementById('shareEmpty');
+  hint.hidden = !empty;
+  hint.textContent = empty ? t(shopping.length ? 'share_all_done' : 'share_empty') : '';
+  ['shareCopyBtn','shareSendBtn','shareTxtBtn','shareEmailBtn'].forEach(id=>{
+    const b = document.getElementById(id); if(b) b.disabled = empty;
+  });
+
+  const box = document.getElementById('shareQrBox'), note = document.getElementById('shareQrNote');
+  const qr = empty ? null : qrEncode(text);
+  box.innerHTML = qr ? qrSvg(qr, t('share_qr_title')) : '';
+  box.hidden = !qr;
+  // A list past the QR ceiling is not an error — it is a big shop. Say which
+  // way out to take instead of drawing something too fine to scan.
+  note.textContent = empty ? '' : (qr ? t('share_qr_note') : t('share_qr_long'));
+
+  // mailto: has no standard length limit, and the practical one is whatever the
+  // mail app decides. Long lists usually survive; some clients truncate them.
+  const long = !empty && encodeURIComponent(text).length > 1800;
+  document.getElementById('shareEmailLong').hidden = !long;
+  shareStatus('');
+}
+function openShare(){
+  try{ shareEmailInput.value = localStorage.getItem(STORE.shareEmail) || ''; }catch(e){}
+  renderShare();
+  open(shareOverlay);
+}
+
+/* The async clipboard needs a secure context, which file:// is not — so the old
+   execCommand path stays as the fallback rather than the feature just failing
+   for anyone who opened index.html by double-clicking it. */
+function shareCopyFallback(text){
+  try{
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.setAttribute('readonly','');
+    ta.style.cssText = 'position:fixed; top:-1000px; opacity:0';
+    document.body.appendChild(ta);
+    ta.select(); ta.setSelectionRange(0, text.length);     // iOS needs the range
+    const ok = document.execCommand('copy');
+    ta.remove();
+    return ok;
+  }catch(e){ return false; }
+}
+function shareCopy(text){
+  if(navigator.clipboard && window.isSecureContext)
+    return navigator.clipboard.writeText(text).then(()=>true, ()=>shareCopyFallback(text));
+  return Promise.resolve(shareCopyFallback(text));
+}
+
+document.getElementById('shopShareBtn').addEventListener('click', openShare);
+shareDone.addEventListener('change', renderShare);
+document.getElementById('shareCopyBtn').addEventListener('click', ()=>{
+  const text = shopListText(shareIncludeDone()); if(!text) return;
+  shareCopy(text).then(ok=>shareStatus(t(ok?'share_copied':'share_copy_fail'), ok?'ok':'warn'));
+});
+document.getElementById('shareTxtBtn').addEventListener('click', ()=>{
+  const text = shopListText(shareIncludeDone()); if(!text) return;
+  const name = 'mealmap-shopping-' + dateStamp() + '.txt';
+  downloadBlob(new Blob([text], {type:'text/plain;charset=utf-8'}), name);
+  shareStatus(t('share_saved', {name}), 'ok');
+});
+/* Kept separate from the click so it can be checked without a mail client
+   opening. The first line of the text doubles as the subject, so the body
+   starts at the items rather than repeating the heading. The address is left
+   un-encoded — it is the mailto: path, not a parameter, and percent-encoding
+   the @ confuses some clients. */
+function shareMailto(text, to){
+  const [subject, ...rest] = String(text).split('\n');
+  return 'mailto:' + (to || '') + '?subject=' + encodeURIComponent(subject) +
+         '&body=' + encodeURIComponent(rest.join('\n').replace(/^\n+/, ''));
+}
+document.getElementById('shareEmailBtn').addEventListener('click', ()=>{
+  const text = shopListText(shareIncludeDone()); if(!text) return;
+  const to = shareEmailInput.value.trim();
+  if(to && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)){ shareStatus(t('share_email_bad'), 'warn'); return; }
+  try{ localStorage.setItem(STORE.shareEmail, to); }catch(e){}
+  location.href = shareMailto(text, to);
+  shareStatus(t('share_email_opened'));
+});
+/* navigator.share needs a secure context and, on desktop, an OS that offers a
+   share sheet. Hidden rather than disabled — an unexplained dead button is
+   worse than one less option. */
+const shareSendBtn = document.getElementById('shareSendBtn');
+if(navigator.share){
+  shareSendBtn.addEventListener('click', ()=>{
+    const text = shopListText(shareIncludeDone()); if(!text) return;
+    navigator.share({ title: t('shop_list_title'), text })
+      .then(()=>shareStatus(''), e=>{ if(e && e.name !== 'AbortError') shareStatus(t('share_send_fail'), 'warn'); });
+  });
+} else {
+  shareSendBtn.hidden = true;
+}

@@ -96,6 +96,7 @@
             <button class="btn ghost sm" id="shopPlanBtn" data-i18n="shop_add_plan">＋ From plan</button>
             <button class="btn ghost sm" id="shopLowBtn" data-i18n="shop_add_low">Add low-stock</button>
             <button class="btn ghost sm" id="shopClearBtn" data-i18n="shop_clear_checked">Clear checked</button>
+            <button class="btn sm" id="shopShareBtn" data-i18n="shop_share">⤴ Share</button>
           </div>
         </div>
         <div class="shop-add">
@@ -391,6 +392,48 @@
   </div>
 </div>
 
+<!-- ============ SHARE THE SHOPPING LIST ============
+     Five ways out of the browser, all carrying the same text. The QR is drawn
+     on this device by js/qr.js — no service is asked to make one, because a
+     shopping list says where somebody shops and what they eat. -->
+<div class="overlay" id="shareOverlay">
+  <div class="modal">
+    <div class="modal-head">
+      <h3 data-i18n="share_title">🛒 Share your shopping list</h3>
+      <button class="close" data-close>✕</button>
+    </div>
+    <div class="modal-body">
+      <p class="about-body" data-i18n="share_intro">Take the list with you, or send it to whoever is doing the shopping. Nothing is uploaded anywhere — it is all made here on your device.</p>
+      <label class="od-auto" style="margin:14px 0 10px"><input type="checkbox" id="shareDone"> <span data-i18n="share_include_done">Include items you have already ticked off</span></label>
+      <pre class="share-preview" id="sharePreview"></pre>
+      <p class="muted-note" id="shareEmpty" style="margin:0 0 14px" hidden></p>
+      <div class="data-actions">
+        <button class="btn ghost" id="shareCopyBtn" data-i18n="share_copy">⧉ Copy</button>
+        <button class="btn ghost" id="shareSendBtn" data-i18n="share_send">📲 Send to an app…</button>
+        <button class="btn ghost" id="shareTxtBtn" data-i18n="share_txt">⬇ Text file</button>
+      </div>
+      <p class="ai-status" id="shareStatus" style="margin:10px 0 0"></p>
+
+      <hr class="data-sep">
+      <h4 class="data-sub" data-i18n="share_email_label">✉ Email it</h4>
+      <p class="muted-note" style="text-align:left; margin:0 0 12px" data-i18n="share_email_note">This opens your own mail app with the list already written — you press send. There is no server here, so nothing is sent for you.</p>
+      <div class="key-row">
+        <input type="email" id="shareEmail" class="share-email" data-i18n-ph="share_email_ph" placeholder="you@example.com" autocomplete="email">
+        <button class="btn ghost" id="shareEmailBtn" data-i18n="share_email">✉ Write the email</button>
+      </div>
+      <p class="muted-note" id="shareEmailLong" style="text-align:left; margin:8px 0 0" data-i18n="share_email_long" hidden>This list is long, and some mail apps cut a long message short. The text file is the safe one.</p>
+
+      <hr class="data-sep">
+      <h4 class="data-sub" data-i18n="share_qr_title">📱 Scan it onto a phone</h4>
+      <div class="qr-wrap" id="shareQrBox" hidden></div>
+      <p class="muted-note" id="shareQrNote" style="margin:12px 0 0"></p>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" data-close data-i18n="close">Close</button>
+    </div>
+  </div>
+</div>
+
 <!-- ============ DATA / SHARING MODAL ============ -->
 <div class="overlay" id="dataOverlay">
   <div class="modal">
@@ -526,6 +569,7 @@
 <script src="js/recipe.js"></script>
 <script src="js/calendar.js"></script>
 <script src="js/pantry.js"></script>
+<script src="js/qr.js"></script>
 <script src="js/shopping.js"></script>
 <script src="js/sync.js"></script>
 <script src="js/ai.js"></script>

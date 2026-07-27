@@ -48,7 +48,10 @@ cover *"buttermilk"* or *"coconut milk"*.
 **🛒 Shopping** — built from any range of the calendar. Quantities are added up when they genuinely
 can be (`2 cloves` + `3 cloves` → `5 cloves`, `200 g` + `1 kg` → `1.2 kg`) and left as separate
 lines when they can't, because a wrong total is worse than two lines. It counts *cooking sessions*,
-so a batch cooked once counts once however many days it spans.
+so a batch cooked once counts once however many days it spans. **⤴ Share** takes the finished list
+out of the browser five ways — clipboard, the OS share sheet, a `.txt` file, a pre-filled email in
+your own mail app, or a **QR code you scan with a phone**. The QR is generated on your device by
+[`js/qr.js`](js/qr.js); no list is ever posted to a code-generating service.
 
 **📅 Calendar** — plan meals into breakfast / lunch / dinner / snack. Drag them between days with a
 mouse or a finger. **Batch cook** once and eat it across several days, with leftovers linked back to
@@ -123,16 +126,16 @@ object's `Cache-Control` metadata, Netlify `_headers`. GitHub Pages already does
 node serve.js
 ```
 
-Then open <http://localhost:8765/tests.html>. **261 unit and end-to-end tests** run automatically
+Then open <http://localhost:8765/tests.html>. **286 unit and end-to-end tests** run automatically
 and report inline — no runner to install, no build, matching how the rest of the project works.
 
 Roughly two thirds are unit tests over the pure logic: quantity parsing and arithmetic, shopping-list
 combining, recipe scaling, unit conversion, the ingredient matcher, dates, the batch model, storage,
-and translation parity across all seven languages. The rest drive the real UI in an iframe — CRUD,
-search, cook mode, dragging chips with **both** mouse and touch gestures, batch cooking — plus the
-AI and OneDrive paths behind a fake `fetch`. A few pin how the app is assembled: that the scripts
-stay classic and in order, that the fonts and libraries really are local, and that nothing is fetched
-from a third party.
+the QR encoder, and translation parity across all seven languages. The rest drive the real UI in an
+iframe — CRUD, search, cook mode, dragging chips with **both** mouse and touch gestures, batch
+cooking, sharing the shopping list — plus the AI and OneDrive paths behind a fake `fetch`. A few pin
+how the app is assembled: that the scripts stay classic and in order, that the fonts and libraries
+really are local, and that nothing is fetched from a third party.
 
 The suite replaces `putKey`, the single choke point for every write, so **no test can reach your
 saved data**. Two of the tests assert exactly that.
@@ -173,7 +176,7 @@ and open it, now or in ten years.
 | [`index.html`](index.html) | The markup, and the only page you open |
 | [`.htaccess`](.htaccess) | Cache headers for Apache/LiteSpeed hosts — see [Running it](#running-it) |
 | [`css/`](css) | The styling, plus the vendored font declarations |
-| [`js/`](js) | The application, in nine files loaded in order |
+| [`js/`](js) | The application, in ten files loaded in order |
 | [`lib/`](lib) | Two vendored libraries — see [`lib/README.md`](lib/README.md) |
 | [`fonts/`](fonts) | Fraunces and Inter — see [`fonts/README.md`](fonts/README.md) |
 | [`tests.html`](tests.html) | The test suite — open it in a browser |

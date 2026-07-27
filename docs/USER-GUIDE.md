@@ -103,6 +103,34 @@ Press it twice and nothing is duplicated.
 pantry, what is missing, and **＋ Add missing** to put just those items on the list. Switch it to
 **Ready to cook** to see only things you could make right now.
 
+### ⤴ Share — getting the list out of the browser
+
+The list is not much use on the computer you planned it on. **⤴ Share** opens a panel with the list
+written out as plain text — exactly as it reads on screen, in the units you have chosen — and five
+ways to take it with you:
+
+| | |
+|---|---|
+| **⧉ Copy** | Onto the clipboard, to paste anywhere. |
+| **📲 Send to an app…** | Your phone's or computer's own share sheet — WhatsApp, Messages, Notes. Only appears where the browser offers it, which in practice means phones and some desktops. |
+| **⬇ Text file** | A `.txt` download. No length limit, and the one to use for a very long list. |
+| **✉ Email** | See below. |
+| **📱 QR code** | See below. |
+
+Already-ticked items are left out, since you have bought them. Tick **Include items you have already
+ticked off** and they come along with a ✓ instead of a dash.
+
+**Email.** Type an address and press **Write the email**. This opens *your own* mail app with the
+subject and the list already filled in, and you press send. MealMap has no server, so it cannot send
+mail for you — and that is also why nothing leaves your device unless you send it yourself. The
+address is remembered in this browser so mailing it to yourself is one click next time; it is never
+part of an export or a sync.
+
+**QR code.** Point another phone's camera at it and the list appears on that phone — no account, no
+app, nothing typed, and no internet needed. The code is drawn on your own device, so the list is not
+sent to any website to be turned into a picture. A very long list will not fit in a code a phone can
+read; when that happens the panel says so and points you at the text file instead.
+
 ---
 
 ## Calendar — the week's plan

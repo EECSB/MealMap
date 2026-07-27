@@ -1,6 +1,6 @@
 # MealMap — Architecture &amp; decisions
 
-_Last updated: 2026-07-25_
+_Last updated: 2026-07-27_
 
 **Why this file exists.** The repo's history was squashed to a single commit, so the reasoning that
 used to live in commit messages lives here instead. This is the record of *why* things are the way
@@ -24,8 +24,11 @@ Two properties are load-bearing and easy to destroy by tidying:
   across files, so a file whose top level *calls* something needs that something defined earlier.
   `let menu = load(...)` sitting in the same file as `function load` is not a coincidence.
 
-The order in `index.html` is: `i18n → core → menu → recipe → calendar → pantry → shopping → sync → ai`.
-`ai.js` ends with the boot lines, so it must stay last.
+The order in `index.html` is:
+`i18n → core → menu → recipe → calendar → pantry → qr → shopping → sync → ai`.
+`ai.js` ends with the boot lines, so it must stay last. `qr.js` is a pure library with no top-level
+dependency on anything else; it sits immediately before `shopping.js`, its only caller, so the
+dependency reads top-down.
 
 ### No third-party requests (2026-07-25)
 `lib/` holds MSAL and SheetJS, `fonts/` holds Fraunces and Inter — all four were CDN-loaded before.
@@ -44,6 +47,12 @@ Two things learned doing it, both recorded in `lib/README.md` and `fonts/README.
   with a weight range — identical rendering.
 
 Only latin and latin-ext are kept; latin-ext is what carries the Slovenian č/š/ž.
+
+This is also why the QR encoder is written rather than fetched: the obvious implementations are a
+CDN library or an image API, and the image API would additionally mean sending the shopping list to
+somebody else's server. See "The QR code" below. The rule is worth restating because it is the kind
+of thing a future feature quietly breaks — an Assembly test fails the build if anything at all is
+loaded from another origin.
 
 ### Cache headers — `.htaccess` (added 2026-07-26)
 Found by checking the live deployment: the host was serving `index.html`, the CSS and the JS with
@@ -81,7 +90,7 @@ upload to a new host, load the page once before walking away.
   [`ONEDRIVE-SETUP.md`](ONEDRIVE-SETUP.md) (OneDrive setup guide),
   [`USER-GUIDE.md`](USER-GUIDE.md) (how to use the app),
   `../.claude/launch.json` (starts a local static server for previewing)
-- **Tests:** serve the folder and open `http://localhost:8765/tests.html` — 261 unit + end-to-end
+- **Tests:** serve the folder and open `http://localhost:8765/tests.html` — 286 unit + end-to-end
   tests, no dependencies. See "How to develop / verify" near the end of this file.
 - **Run it:** double-click `index.html`, **or** serve the folder with `node serve.js` and open
   `http://localhost:8765`. A local server is recommended — browser storage behaves normally there,
@@ -225,6 +234,10 @@ favicon size — earlier, finer strokes vanished. If you edit one copy, edit the
     meals still add up (two meals each wanting 1 slice of bread need 2) — the group counts
     contributions, not distinct strings. The wording follows the largest contributor so it reads
     "3 onions", not "3 onion", and counting units re-pluralise on output.
+  - **⤴ Share** (added 2026-07-27) — the list is no use on the computer it was planned on. One
+    panel, one string, five ways out: **Copy**, **Send to an app…** (`navigator.share`), **Email**,
+    **Text file**, and a **QR code**. See "Sharing the shopping list" below for why each one is
+    shaped the way it is.
 - **📅 Calendar** — month grid (Monday-first), meals scheduled into Breakfast/Lunch/Dinner/Snack
   slots (colour-coded), today highlighted, prev/next/Today. Click a day → add/remove meals or
   **🎲 Surprise me** (drops a random meal into the slot).
@@ -325,6 +338,96 @@ four places to forget a new store in.
 
 ---
 
+### Sharing the shopping list (added 2026-07-27)
+**Shopping → ⤴ Share.** One panel, one string, five ways out. The multiplicity is the point:
+"share the shopping list" means a different thing on a phone, at a desk, and to someone else in the
+household, and each of these is the obvious answer to exactly one of those.
+
+**One text, built from what is on screen.** `shopListText()` walks `shopping` in the same order
+`renderShopList()` does and through the same `convUnits()`, so a list read in imperial cannot arrive
+on the phone in metric. `renderShopping()` re-renders the panel while it is open, which is what makes
+the language and unit toggles carry over for free — both of them already route through there.
+Ticked items are **left out by default** (you have bought them) and marked `✓` rather than `-` when
+included, which survives being pasted into a notes app; a separate section would not.
+
+**Empty and all-ticked are different states.** Showing "your list is empty" when everything is
+merely ticked off would be a lie with the fix sitting in a checkbox directly above it, so the two
+have their own messages.
+
+**Email is `mailto:`, and cannot be anything else.** There is no back end and there is not going to
+be one, so the app cannot *send* mail — it fills in the user's own mail app and they press send.
+Worth stating plainly in the UI, because "email it to me" sounds like it should mean a server did
+it. Two details: the address is left un-encoded (it is the `mailto:` path, not a parameter, and
+percent-encoding the `@` confuses some clients), and the text's first line becomes the subject so
+the body starts at the items. `shareMailto()` is a separate pure function purely so a test can check
+the URL without an OS mail client opening mid-run. The address is remembered in `localStorage`
+(`kitchenMenu.shareEmail`) so mailing it to yourself is one click — and it is deliberately **not**
+in `syncPayload()`, so it never travels in an export or to OneDrive.
+
+**Copy keeps the `execCommand` fallback.** The async clipboard needs a secure context, and
+`file://` is not one — the app is explicitly meant to work double-clicked. The modern path is tried
+first and the old one catches everything else; if both fail the panel says to select and copy by
+hand rather than silently doing nothing.
+
+**`navigator.share` hides rather than disables.** It does not exist on most desktops. A dead button
+with no explanation is worse than one fewer option.
+
+#### The QR code — and why the encoder is ours (`js/qr.js`)
+Every "QR code API" on the web means POSTing the list to a stranger's server to be handed a picture
+back. A shopping list says where somebody shops, what they eat, and how many of them there are —
+that is a poor trade, and it would be the only third-party request in the whole app (see "No
+third-party requests"). Vendoring a full library into `lib/` was the alternative; ~200 lines of
+arithmetic that runs offline was the smaller one, and it needs no annual re-verification.
+
+Deliberately narrow: **byte mode (UTF-8)**, which encodes anything; **error-correction level M**,
+the usual choice for a screen; **versions 1–20**. The version ceiling is a *scannability* limit, not
+a format one — a v20 code is 97×97 modules, about as fine as a phone camera manages off a laptop
+screen, and at the panel's 320px cap that is still ~3px a module. Past 666 bytes `qrEncode()`
+returns `null` and the panel points at the text file. **It never truncates**: a QR that scans and
+yields a plausible but incomplete list is worse than no QR.
+
+Only two tables are stored — error-correction codewords per block, and blocks per version — because
+those are the parts ISO/IEC 18004 does not let you derive. Everything else (total codewords, data
+capacity, alignment-pattern centres) is computed from the version number, which is both shorter and
+much harder to typo.
+
+Three things that would each have been a silent, plausible-looking failure:
+
+- **The character-count field is 8 bits below version 10.** So 256 bytes cannot be *counted* in
+  version 9 however much room it has — unguarded, the length wraps to zero and the code scans as
+  **empty**. `qrEncodeData()` refuses those versions outright.
+- **Timing patterns must not be drawn over the finders.** Running row/column 6 the full width
+  overwrites finder modules with the wrong parity; it runs only between them (index 8 to size−9).
+- **Format info is drawn twice, in two places**, so a damaged corner does not cost the reader the
+  mask number. Both copies have to agree — a test reads them back and checks they do.
+
+**How it is verified, and what that is worth.** No scanner was available on this machine
+(`BarcodeDetector` is not implemented in Chrome on Windows; checked, not assumed), so "it renders
+something square" had to be replaced with something stronger. Two independent checks, both in
+`tests.html`:
+
+1. **The published tables.** Byte capacities and total codewords for all 20 versions at level M, and
+   the alignment-pattern centres, are asserted against ISO/IEC 18004. The code derives these rather
+   than storing them, so self-consistency cannot fake a match.
+2. **A decoder that reads a finished grid back the way a scanner does.** It rebuilds the
+   function-module map from the version number alone, checks the format info against its BCH(15,5)
+   code and that both copies agree, un-masks, walks the placement, de-interleaves with independently
+   derived block geometry, and requires **every block's Reed–Solomon syndromes to be zero** before
+   it will return a string. All 20 versions are filled to the exact byte and round-tripped, along
+   with accented Slovenian, emoji, and the 256-byte trap above. It shares the encoder's GF(256)
+   arithmetic — that is just field maths — but none of its layout, padding or masking decisions.
+
+Any error in placement, masking, interleaving or padding breaks at least one of those; the syndrome
+check in particular is unforgiving. **What is still unproven is the last inch:** whether a real phone
+camera and a real decoder implementation read it off a screen. That needs a phone, and so does the
+touch-drag and cook mode — see "Hosting" under next steps.
+
+The SVG is one `<path>` rather than a rect per module (thousands of elements are slow to lay out and
+show hairline seams when scaled), carries the required **four-module quiet zone**, and is explicitly
+`#000` on `#fff` — never themed, because the contrast is the whole point.
+
+---
+
 ## ⚙️ Settings modal (opened by the header gear button)
 
 **The modal header is the brand mark, the name and the tagline** (changed 2026-07-25) rather than a
@@ -357,9 +460,12 @@ duplicate id breaks `getElementById` wiring silently rather than loudly.
 ### Multilingual — 7 languages
 **EN, SL, ES, FR, DE, IT, PT** (pt-BR wording). Added ES/FR/DE/IT/PT on 2026-07-25.
 - `data-i18n` / `data-i18n-ph` / `data-i18n-title` attributes on elements; `I18N = {en:{}, sl:{}, …}`
-  dictionary — **167 keys per language, all seven at exact parity**; `t(key, params)` with
+  dictionary — **283 keys per language, all seven at exact parity**; `t(key, params)` with
   `{placeholder}` interpolation; `applyTranslations()` walks the attributes. `setLang(l)` validates
   against `I18N`, persists, re-renders and refreshes open modals.
+  (This figure read 167 until 2026-07-27 and had been stale for a while — it was 260 before the
+  share panel added 23. The number is prose; the *parity* is what a test enforces, so treat a
+  mismatch here as a stale doc rather than a bug.)
 - Dates localise via `LOCALE` (`en-GB`, `sl-SI`, `es-ES`, `fr-FR`, `de-DE`, `it-IT`, `pt-BR`);
   weekday abbreviations via `WEEKDAYS_I18N` (Monday-first for all seven).
 - **Flags are inline SVG** on purpose — regional-indicator emoji render as "GB"/"SI" letters on
@@ -371,7 +477,7 @@ duplicate id breaks `getElementById` wiring silently rather than loudly.
 - The picker is a **custom dropdown** (`.langpick`), not a `<select>`: a native select cannot render
   inline SVG. It closes on outside-click and Escape. Built by `renderLangPick()`, which `setLang()`
   calls, so the trigger label always follows the active language.
-- **Adding a language** = one `I18N` block (copy `en`, translate all 167), one `LOCALE` entry, one
+- **Adding a language** = one `I18N` block (copy `en`, translate all 283), one `LOCALE` entry, one
   `WEEKDAYS_I18N` row, one `LANGS` entry with a flag. Nothing else. Verify parity by diffing
   `Object.keys(I18N.en)` against the new block — a missing key renders as the raw key name.
 - **Caveat:** these five were machine-translated and have not been reviewed by native speakers.
@@ -572,7 +678,9 @@ re-tokenises the same strings on every render.
 
 State lives in `localStorage` under `kitchenMenu.*` keys — every access is wrapped in try/catch
 (see "Gotchas"). Keys: `items`, `schedule`, `pantry`, `shopping`, `batches`, `lang`, `units`,
-`odClientId`, `odShareUrl`, `odAuto`, `aiProvider`, `aiKey`, `aiModel`.
+`odClientId`, `odShareUrl`, `odAuto`, `fsName`, `fsAuto`, `aiProvider`, `aiKey`, `aiModel`,
+`shareEmail`. Only the first five are data stores (`STORES`); the rest are settings, written
+straight to `localStorage` rather than through `putKey()`, and none of them are in `syncPayload()`.
 
 A schedule entry is `{mealId, slot}` plus an optional `batchId` linking it to a batch-cook run
 (see "Batch cooking"). `batches[]` is `{id, mealId, cookDate, portions}`.
@@ -717,6 +825,19 @@ export download filenames → `mealmap-<date>.json/.xlsx`). Internal identifiers
   ingredient matching — see "Ingredient ⇄ pantry matching" for what has to change first.
   **Accepted by the owner** — not a task, but read that section before adding such a language.
 - **Unit conversion is best-effort regex** — unusual units or phrasings are left as-is.
+- **The QR code has never been read by an actual phone** (2026-07-27). It is verified against the
+  standard's published tables and round-tripped through a decoder written from the spec side, which
+  between them catch any error in placement, masking, interleaving or padding — but no scanner ran.
+  `BarcodeDetector` is not implemented in Chrome on Windows, so there was nothing on this machine to
+  scan with. See "The QR code" for what the verification does and does not cover. **First thing to
+  try once the app is hosted.**
+- **The Shopping view overflows sideways at phone widths** (found 2026-07-27, **pre-existing** and
+  not fixed here). In a 375px viewport `document.documentElement.scrollWidth` is 608; Menu, Pantry
+  and Calendar all measure exactly 375. `.shop-panel` comes out 584px wide inside a 327px
+  `.shop-grid`, so a grid track is being sized to its content rather than its container — the usual
+  cause is an `auto`/`1fr` minimum resolving to min-content, wanting `minmax(0, 1fr)` and/or
+  `min-width: 0`. Verified pre-existing by removing `#shopShareBtn` from the DOM and re-measuring:
+  unchanged. Left alone deliberately rather than folded into an unrelated feature.
 - **localStorage** may be blocked in some `file://`/sandbox contexts; the app still runs (guarded)
   but won't persist there. Opening in a normal browser or via a local server persists fine.
 - **Excel export** loads SheetJS from a CDN (needs internet); JSON export works offline.
@@ -757,6 +878,14 @@ closes only if it did. `pointerdown` rather than `mousedown` so touch and pen be
 ever add a dialog that closes on a *synthetic* click, note that a bare dispatched `click` with no
 preceding `pointerdown` no longer dismisses anything — which is the point.
 
+**A test that says `$('.someClass')` is asserting "there is only one of these."** Reusing `.key-row`
+(a two-line input-plus-button layout) in the share panel broke a passing AI test that had used
+`$('.key-row')` to mean *the AI key row* — the share panel is earlier in the markup, so
+`querySelector` started answering with the wrong one. The class was the right thing to reuse; the
+selector was the weak part, and it now reaches the row from `#aiKey.closest('.key-row')`, which is
+both unambiguous and a stronger assertion. Worth a glance whenever a shared layout class gains a
+second user (2026-07-27).
+
 **Don't mirror a value into a field and then read it from somewhere else.** The AI key box was
 populated from `localStorage` at boot and read back from `localStorage` on use, so anything that
 filled the box by another route — a password manager, which survives clearing site data — produced a
@@ -777,22 +906,35 @@ UI insisting there was no key while showing one. Whatever is on screen should be
 
 ### Test suite — `tests.html` (added 2026-07-25)
 
-Open <http://localhost:8765/tests.html>. **261 tests, no dependencies, no build step.** Green ticks
+Open <http://localhost:8765/tests.html>. **286 tests, no dependencies, no build step.** Green ticks
 and a tally at the top; a failure prints the expected/actual inline. The page also sets
 `window.__results = {total, pass, fail, failures[]}` and `window.__done`, so a script can poll it.
 
 Roughly two thirds are **unit tests** over the pure logic — quantity parsing and arithmetic,
 shopping-list combining, recipe scaling, unit conversion, the ingredient matcher (including the
 `Eggs`/`1 egg` and `Milk`/`buttermilk` regressions that started all this), dates and plan ranges,
-the batch model, storage, and translation parity. The rest are **end-to-end** tests that drive the
-real UI in an iframe: menu CRUD, the confirm modal, duplicate, favourites, search, servings scaling,
-cook mode, the calendar, dragging chips between days with **both** mouse and touch gestures, batch
-cooking, and the pantry/shopping flows. The **AI and OneDrive** paths are driven through a fake
-`fetch` (`withFetch()`, `withOneDrive()`, `withAiKey()`) — request URLs, headers, bodies, and every
-success and error shape for all three providers.
+the batch model, storage, the **QR encoder**, and translation parity. The rest are **end-to-end**
+tests that drive the real UI in an iframe: menu CRUD, the confirm modal, duplicate, favourites,
+search, servings scaling, cook mode, the calendar, dragging chips between days with **both** mouse
+and touch gestures, batch cooking, the pantry/shopping flows, and **sharing the shopping list**. The
+**AI and OneDrive** paths are driven through a fake `fetch` (`withFetch()`, `withOneDrive()`,
+`withAiKey()`) — request URLs, headers, bodies, and every success and error shape for all three
+providers.
+
+The **QR** group carries its own decoder (`qrDecode()` in `tests.html`), which is unusual enough to
+flag: the encoder is ours, so a test that only re-ran the encoder's own logic would prove nothing.
+It reads a finished grid the way a scanner does and refuses to return a string unless the format
+info passes its BCH check in both copies and every block's Reed–Solomon syndromes are zero. See
+"The QR code" for the full argument and for what it still does not cover.
+
+Two buttons in the share panel are **deliberately never clicked** by a test: Copy would take over
+the machine's real clipboard, and Email would ask the OS to launch a mail client mid-run. Both are
+covered through the pure function underneath (`shopListText()`, `shareMailto()`), which is why
+`shareMailto()` exists separately from its click handler at all. **Text file** *is* clicked, with
+`downloadBlob` stubbed, so the filename and the blob's charset stay pinned.
 
 The **Assembly** group is different in kind from the rest: it tests the *shape of the project* rather
-than its behaviour. That the nine scripts are classic, undeferred and in the original order; that a
+than its behaviour. That the ten scripts are classic, undeferred and in the original order; that a
 value from each file is reachable in the one shared global scope; that load-time derivations like
 `PHRASES` and `CANON_NAMES` actually built; that `lib/` and `fonts/` are served from this origin and
 nothing else is; and that `loadScript` resolves a relative path before deciding it is already loaded.
@@ -833,6 +975,13 @@ and dates are pinned to **July 2026** so nothing depends on when the suite is ru
   filtered render is **2.3ms** (1.2ms matching, 1.1ms DOM) — typing an 8-letter query costs ~19ms
   total. `normWords()` is memoised in `_wordCache`, which is what keeps the matcher cheap. If the
   library ever reaches thousands of meals, re-measure before adding complexity.
+- **The QR code does not need caching or a worker.** Encoding is **0.8ms** for one item, **9.9ms**
+  for a typical 14-item list (version 13), and **14.4ms** at the version-20 ceiling; a payload past
+  the ceiling is refused in 2.2ms. A whole `renderShare()` for 14 items is **9.2ms**, essentially all
+  of it the eight mask-penalty evaluations. That cost is paid when the panel opens and when the
+  language or units change under it — not per keystroke — so it is comparable to one of the app's own
+  localStorage writes. Re-measure before adding complexity; the obvious lever if it ever matters is
+  scoring fewer masks.
 - **No HTML-escaping holes.** Every template interpolation that lands in markup was audited; the
   seven that don't go through `esc()` are our own constants, computed numbers, or a CSS `url()` where
   a single-property setter cannot take a second declaration. `sourceUrl` is scheme-checked
@@ -849,9 +998,15 @@ and dates are pinned to **July 2026** so nothing depends on when the suite is ru
   (see "AI assistant"). Fixing it required teaching `convUnits()` about fractions first.
 - ~~Swap the logo emoji (🍳) for a map-flavoured one; add a MealMap **favicon**.~~ — **done
   2026-07-25** (see "Brand mark" above).
+- ~~Get the shopping list out of the browser and onto a phone.~~ — **done 2026-07-27**
+  (**⤴ Share**: copy, share sheet, email, text file, QR). Still open: nothing planned. The QR could
+  carry a *link* back into a hosted MealMap rather than plain text, which would let the phone import
+  the list as data instead of showing it — that needs hosting first, and plain text has the large
+  advantage of working from `file://` and needing no app on the other end.
 - **Hosting and the GitHub push are the owner's** (stated 2026-07-25): the app goes on their blog and
   they will push manually. Not a task here. Hosting is still what unblocks OneDrive sync, and it is
-  what would let cook mode and the touch-drag be tried on a real phone for the first time.
+  what would let cook mode, the touch-drag, `navigator.share` **and the QR code** be tried on a real
+  phone for the first time.
 
 **The agreed 7-feature run** (one at a time, confirming before each next one):
 1. ~~Servings scaling~~ — **done 2026-07-25**
