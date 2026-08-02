@@ -138,6 +138,12 @@ read; when that happens the panel says so and points you at the text file instea
 A month at a time, Mondays first. **Click any day** to add meals to it, or use **🎲 Surprise me** to
 have one picked.
 
+The day view shows your meals as a **gallery of cards** — photo, name and the one-line description —
+so you can pick by looking rather than by remembering names. Tap a card to choose it, pick the slot,
+and press **＋ Add**; tapping the chosen card again unpicks it. Once you have more than eight meals a
+**search box** appears above the cards, and it searches ingredients as well as names — so "aubergine"
+finds the recipe that uses one.
+
 **Drag a meal to another day** to move it. On a computer just drag it; on a phone, **hold it for a
 moment first**, then drag — that way an ordinary swipe still scrolls the page.
 
@@ -219,7 +225,14 @@ computer will start you over unless you have a copy.
 Three ways to keep one, easiest first:
 
 **1. Export a file.** *Settings → ⬇ Export JSON.* Keep it somewhere safe; **⬆ Import JSON** brings it
-back. **⬇ Export Excel** makes a readable copy for reference, but import needs the JSON one.
+back — that is the one that keeps everything exactly.
+
+**⬇ Export Excel** makes a readable copy, and **⬆ Import Excel** reads one back in. That is the way
+to edit in bulk: export the workbook, paste in thirty recipes or fix a hundred ingredient lines in
+the spreadsheet, and import it again. Two things do not survive the trip, because a spreadsheet
+cannot hold them: **photos you uploaded** (linked photos are fine) and **batch-cooking links** —
+those days come back as ordinary planned meals. Ingredients and steps live in one cell each,
+separated by ` | `. Both kinds of import **replace** what is in the app, so the last file wins.
 
 **2. Keep a file up to date** *(Chrome, Edge or Opera on a computer)*. Press **📄 Choose a file** and
 pick a file inside a folder your cloud already syncs — your OneDrive, Dropbox, Google Drive or

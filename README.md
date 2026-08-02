@@ -18,7 +18,7 @@ fetched from anyone else's server, nothing can be blocked by a strict CSP, and n
 handed to a CDN. The only outbound requests are ones you cause: an AI import you asked for, a sync
 you set up, or a recipe photo you linked.
 
-`~4,600 lines` · `no build` · `7 languages` · `261 tests` · `no third-party requests`
+`~5,700 lines` · `no build` · `7 languages` · `313 tests` · `no third-party requests`
 
 <!-- Worth adding when there is time: cook mode and the calendar mid-drag. -->
 
@@ -53,9 +53,10 @@ out of the browser five ways — clipboard, the OS share sheet, a `.txt` file, a
 your own mail app, or a **QR code you scan with a phone**. The QR is generated on your device by
 [`js/qr.js`](js/qr.js); no list is ever posted to a code-generating service.
 
-**📅 Calendar** — plan meals into breakfast / lunch / dinner / snack. Drag them between days with a
-mouse or a finger. **Batch cook** once and eat it across several days, with leftovers linked back to
-the day you cooked and shown as such.
+**📅 Calendar** — plan meals into breakfast / lunch / dinner / snack. Click a day and pick from a
+gallery of your meals — photo, name and description — rather than a dropdown of names. Drag them
+between days with a mouse or a finger. **Batch cook** once and eat it across several days, with
+leftovers linked back to the day you cooked and shown as such.
 
 **▤ Cook mode** — one recipe, full screen, no chrome. Tap a line to strike it off, and the screen
 stays awake while you cook. Ctrl-P prints a clean one-page card.
@@ -78,7 +79,7 @@ you over. So keep a copy. Three ways, in order of how little setup they need:
 
 | | Setup | Works on |
 |---|---|---|
-| **Export / Import a file** | none | everything |
+| **Export / Import a file** (JSON or Excel) | none | everything |
 | **Keep a file up to date** | pick a file, once | Chrome, Edge, Opera — desktop |
 | **OneDrive live sync** | app registration — see [`docs/ONEDRIVE-SETUP.md`](docs/ONEDRIVE-SETUP.md) | everything, once hosted |
 
@@ -126,16 +127,17 @@ object's `Cache-Control` metadata, Netlify `_headers`. GitHub Pages already does
 node serve.js
 ```
 
-Then open <http://localhost:8765/tests.html>. **286 unit and end-to-end tests** run automatically
+Then open <http://localhost:8765/tests.html>. **313 unit and end-to-end tests** run automatically
 and report inline — no runner to install, no build, matching how the rest of the project works.
 
 Roughly two thirds are unit tests over the pure logic: quantity parsing and arithmetic, shopping-list
 combining, recipe scaling, unit conversion, the ingredient matcher, dates, the batch model, storage,
-the QR encoder, and translation parity across all seven languages. The rest drive the real UI in an
-iframe — CRUD, search, cook mode, dragging chips with **both** mouse and touch gestures, batch
-cooking, sharing the shopping list — plus the AI and OneDrive paths behind a fake `fetch`. A few pin
-how the app is assembled: that the scripts stay classic and in order, that the fonts and libraries
-really are local, and that nothing is fetched from a third party.
+the QR encoder, reading a spreadsheet back in, and translation parity across all seven languages. The
+rest drive the real UI in an iframe — CRUD, search, cook mode, dragging chips with **both** mouse and
+touch gestures, batch cooking, picking a meal from the day gallery, sharing the shopping list, and
+importing a real `.xlsx` — plus the AI and OneDrive paths behind a fake `fetch`. A few pin how the
+app is assembled: that the scripts stay classic and in order, that the fonts and libraries really are
+local, and that nothing is fetched from a third party.
 
 The suite replaces `putKey`, the single choke point for every write, so **no test can reach your
 saved data**. Two of the tests assert exactly that.

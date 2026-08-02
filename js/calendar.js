@@ -164,16 +164,64 @@ function openDay(key){
   currentDayKey = key;
   document.getElementById('dayTitle').textContent =
     parseKey(key).toLocaleDateString(LOCALE[lang],{weekday:'long', month:'long', day:'numeric'});
-  const sel = document.getElementById('d_meal');
-  if(menu.length===0){
-    sel.innerHTML = `<option value="">${esc(t('no_meals_option'))}</option>`;
-  } else {
-    sel.innerHTML = menu.slice().sort((a,b)=>a.name.localeCompare(b.name, LOCALE[lang]))
-      .map(m=>`<option value="${m.id}">${esc((m.emoji?m.emoji+' ':'')+m.name)}</option>`).join('');
-  }
+  // Nothing is picked on open: with the meals shown as pictures, an Add button that
+  // acts on a card you never chose is a mis-click waiting to happen.
+  dayPickId = null;
+  document.getElementById('d_search').value = '';
+  renderMealPick();
   renderDayList();
   open(document.getElementById('dayOverlay'));
 }
+
+/* ---------- the meal gallery ----------
+   The filter box is what the old <select> gave away for free: a native dropdown
+   answers type-ahead, a grid of cards does not. It stays out of the way until
+   there are enough meals for scrolling to be the slower way to find one. */
+const PICK_SEARCH_FROM = 9;
+let dayPickId = null;
+function renderMealPick(){
+  const box = document.getElementById('d_mealPick');
+  const wrap = document.getElementById('d_searchWrap');
+  wrap.hidden = menu.length < PICK_SEARCH_FROM;
+  if(wrap.hidden) document.getElementById('d_search').value = '';
+  if(menu.length===0){
+    box.innerHTML = `<p class="pick-empty">${esc(t('no_meals_option'))}</p>`;
+    return;
+  }
+  const q = document.getElementById('d_search').value.trim();
+  const items = menu.filter(m=>searchMeal(m, q).hit)
+    .sort((a,b)=>a.name.localeCompare(b.name, LOCALE[lang]));
+  if(items.length===0){
+    box.innerHTML = `<p class="pick-empty">${esc(t('nomatch_title'))}</p>`;
+    return;
+  }
+  box.innerHTML = items.map(m=>{
+    const img = mealImages(m)[0];
+    return `<button type="button" class="pick-card" data-id="${esc(m.id)}" aria-pressed="${m.id===dayPickId}">
+      <span class="pick-thumb">
+        <span class="emoji">${esc(m.emoji||'🍽️')}</span>
+        ${img?`<img src="${esc(img)}" alt="" loading="lazy" onerror="this.style.display='none'">`:''}
+      </span>
+      <span class="pick-body">
+        <span class="pick-name">${esc(m.name)}</span>
+        ${m.desc?`<span class="pick-desc">${esc(m.desc)}</span>`:''}
+        ${m.time?`<span class="pick-meta">⏱️ ${esc(m.time)} ${esc(t('min'))}</span>`:''}
+      </span>
+    </button>`;
+  }).join('');
+}
+
+function markPicked(id){          // repaints the ticks without losing the scroll or the filter
+  dayPickId = id;
+  document.querySelectorAll('#d_mealPick .pick-card').forEach(c=>
+    c.setAttribute('aria-pressed', String(c.dataset.id === dayPickId)));
+}
+document.getElementById('d_mealPick').addEventListener('click', e=>{
+  const card = e.target.closest('.pick-card'); if(!card) return;
+  // clicking the chosen meal again clears it, so there is a way back to "nothing picked"
+  markPicked(card.dataset.id === dayPickId ? null : card.dataset.id);
+});
+document.getElementById('d_search').addEventListener('input', renderMealPick);
 
 function renderDayList(){
   const items = schedule[currentDayKey]||[];
@@ -224,10 +272,9 @@ document.getElementById('schedList').addEventListener('click', async e=>{
 });
 
 document.getElementById('d_add').addEventListener('click', ()=>{
-  const mealId = document.getElementById('d_meal').value;
-  const slot = document.getElementById('d_slot').value;
-  if(!mealId){ alert(t('need_meal_alert')); return; }
-  addScheduled(currentDayKey, mealId, slot);
+  if(menu.length===0){ alert(t('need_meal_alert')); return; }
+  if(!dayPickId){ alert(t('need_pick_alert')); return; }
+  addScheduled(currentDayKey, dayPickId, document.getElementById('d_slot').value);
   renderDayList();
 });
 
@@ -239,6 +286,7 @@ document.getElementById('d_surprise').addEventListener('click', ()=>{
   if(pool.length===0) pool = menu;  // all meals already on this day — allow repeats
   const pick = pool[Math.floor(Math.random()*pool.length)].id;
   addScheduled(currentDayKey, pick, slot);
+  markPicked(pick);                 // tick what it landed on, so the roll is not a mystery
   renderDayList();
 });
 

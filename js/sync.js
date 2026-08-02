@@ -102,6 +102,181 @@ function exportExcel(){
 document.getElementById('exportExcelBtn').addEventListener('click', exportExcel);
 
 /* ============================================================
+   EXCEL IMPORT  —  exportExcel() read backwards
+   ------------------------------------------------------------
+   JSON stays the faithful backup: a spreadsheet cannot carry an uploaded photo
+   (base64 data URLs run far past Excel's cell limit) or the batch links, so a
+   round trip through Excel loses both. What it is good for is bulk editing —
+   take the workbook out, paste in thirty recipes, bring it back.
+
+   So the reading is deliberately forgiving. Headings match case-insensitively
+   with a few aliases, because a hand-made sheet says "Time" where the export
+   says "Prep (min)". Slots are matched against every language MealMap speaks:
+   the export writes the *label* it was showing at the time, and the file should
+   still import after switching language. And a plan row naming a meal the sheet
+   does not contain is dropped and counted, not left pointing at nothing.
+   ============================================================ */
+function xlRow(row){          // one row keyed by lower-case heading
+  const out = {};
+  Object.keys(row||{}).forEach(k=>{ out[String(k).trim().toLowerCase()] = row[k]; });
+  return out;
+}
+function xlGet(row, ...names){
+  for(const n of names){
+    const v = row[n];
+    if(v!=null && String(v).trim()!=='') return String(v).trim();
+  }
+  return '';
+}
+function xlList(v){ return String(v||'').split('|').map(s=>s.trim()).filter(Boolean); }
+function xlNum(v){
+  let s = String(v==null?'':v).trim();
+  // A comma is a thousands separator in "1,200" and a decimal point in "12,5".
+  // Reading the first as 1.2 would quietly divide a calorie count by a thousand.
+  if(/^-?\d{1,3}(,\d{3})+$/.test(s)) s = s.replace(/,/g, '');
+  else s = s.replace(',', '.');
+  const n = Number(s);
+  return (s!=='' && isFinite(n)) ? n : '';
+}
+// "yes" is what the export writes; the rest is for whoever typed it by hand
+function xlYes(v){ return /^(y|yes|true|1|x|✓|da|ja|si|sí|sì|oui|sim)$/i.test(String(v==null?'':v).trim()); }
+// Uploaded photos leave the marker "(uploaded photo)" in the sheet — a label,
+// not a link, and the one thing that must not come back as an image src.
+function xlImage(v){ const s = String(v||'').trim(); return /^(https?:|data:)/i.test(s) ? s : ''; }
+function xlDateKey(v){
+  if(v instanceof Date && !isNaN(v)) return dateKey(v);
+  const s = String(v==null?'':v).trim();
+  if(!s) return '';
+  const iso = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if(iso) return dateKey(new Date(+iso[1], +iso[2]-1, +iso[3]));
+  // A bare serial number, if the cell was never formatted as a date. Bounded to
+  // 1954–2064, so a stray "2026" in the column is not read as a day in 1905.
+  const serial = Number(s);
+  if(/^\d+(\.\d+)?$/.test(s) && serial >= 20000 && serial <= 60000 &&
+     window.XLSX && XLSX.SSF && XLSX.SSF.parse_date_code){
+    const p = XLSX.SSF.parse_date_code(serial);
+    if(p && p.y) return dateKey(new Date(p.y, p.m-1, p.d));
+  }
+  // Anything else is best-effort and inherently ambiguous — 09/07/2026 is two
+  // different days depending on who typed it. ISO or a real date cell is exact.
+  const d = new Date(s);
+  return isNaN(d) ? '' : dateKey(d);
+}
+function slotFromLabel(label){
+  const s = String(label||'').trim().toLowerCase();
+  const slots = ['breakfast','lunch','dinner','snack'];
+  if(slots.includes(s)) return s;
+  for(const code of Object.keys(I18N)){
+    for(const slot of slots){
+      const v = I18N[code]['slot_'+slot];
+      if(v && String(v).trim().toLowerCase() === s) return slot;
+    }
+  }
+  return 'dinner';   // a slot nobody can read still belongs somewhere on the day
+}
+
+/* Sheets in, payload out — the same shape applyPayload() takes from a JSON file,
+   plus a count of the plan rows that named a meal the sheet does not have.
+   Pure: no DOM, no XLSX, so it is the part worth testing directly. */
+function excelRowsToPayload(sheets){
+  const meals = [], idByName = new Map();
+  (sheets.meals||[]).map(xlRow).forEach(r=>{
+    const name = xlGet(r,'name','meal','dish');
+    if(!name) return;               // an empty export still writes one blank row
+    const imgs = [xlImage(xlGet(r,'image','photo'))]
+      .concat(xlList(xlGet(r,'more photos','photos')).map(xlImage))
+      .filter(Boolean);
+    const nut = {};
+    ['calories','protein','carbs','fat'].forEach(k=>{
+      const v = xlNum(xlGet(r,k)); if(v!=='') nut[k] = v;
+    });
+    const m = {
+      id: uid(), name,
+      category: xlGet(r,'category'), emoji: xlGet(r,'emoji'),
+      time: xlNum(xlGet(r,'prep (min)','prep','time')),
+      servings: xlNum(xlGet(r,'servings')),
+      desc: xlGet(r,'description','desc'),
+      ingredients: xlList(xlGet(r,'ingredients')),
+      steps: xlList(xlGet(r,'steps')),
+      images: imgs, image: imgs[0] || '',
+      sourceUrl: xlGet(r,'source','source url','link'),
+      nutrition: Object.keys(nut).length ? nut : null
+    };
+    meals.push(m);
+    const key = name.toLowerCase();
+    if(!idByName.has(key)) idByName.set(key, m.id);   // a repeated name goes to the first row
+  });
+
+  const schedule = {};
+  let skipped = 0;
+  (sheets.schedule||[]).map(xlRow).forEach(r=>{
+    const day = xlDateKey(r['date']!=null && String(r['date']).trim()!=='' ? r['date'] : r['day']);
+    const id  = idByName.get(xlGet(r,'meal','name','dish').toLowerCase());
+    if(!day || !id){ skipped++; return; }
+    (schedule[day] = schedule[day] || []).push({ mealId:id, slot:slotFromLabel(xlGet(r,'slot')) });
+  });
+
+  const pantry = (sheets.pantry||[]).map(xlRow).map(r=>({
+    id: uid(), name: xlGet(r,'name','item','ingredient'),
+    qty: xlGet(r,'quantity','qty'), emoji: xlGet(r,'emoji'),
+    category: xlGet(r,'category'), low: xlYes(xlGet(r,'running low','low'))
+  })).filter(p=>p.name);
+
+  const shopping = (sheets.shopping||[]).map(xlRow).map(r=>({
+    id: uid(), name: xlGet(r,'item','name'), done: xlYes(xlGet(r,'bought','done'))
+  })).filter(s=>s.name);
+
+  // Batches cannot survive a spreadsheet — the export never wrote them — so a
+  // batch's days come back as ordinary scheduled meals.
+  return { payload:{ app:'kitchen-menu', version:SCHEMA_VERSION, menu:meals, schedule, pantry, shopping, batches:[] }, skipped };
+}
+
+// Case-insensitive, because "meals" and "Meals" are the same sheet to a person.
+function xlSheet(wb, name){
+  const XLSX = window.XLSX;
+  const found = wb.SheetNames.find(n=>n.trim().toLowerCase() === name);
+  return found ? XLSX.utils.sheet_to_json(wb.Sheets[found], {defval:''}) : null;
+}
+function importExcel(file){
+  loadScript('lib/xlsx.full.min.js', ()=>{
+    const XLSX = window.XLSX;
+    const reader = new FileReader();
+    reader.onerror = ()=>alert(t('import_excel_bad'));
+    reader.onload = async ()=>{
+      let wb;
+      try{ wb = XLSX.read(new Uint8Array(reader.result), {type:'array', cellDates:true}); }
+      catch(e){ alert(t('import_excel_bad')); return; }
+      let meals = xlSheet(wb, 'meals');
+      // A CSV, or a workbook whose one sheet was renamed. A name alone is not
+      // enough to go on — a Pantry or Shopping sheet has one too — so it also
+      // has to carry a column only a meal has, or exporting the pantry and
+      // importing it back would quietly turn the shelves into recipes.
+      if(!meals && wb.SheetNames.length === 1){
+        const only = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {defval:''}).map(xlRow);
+        const looksLikeMeals = only.some(r=>xlGet(r,'name','meal','dish')) &&
+          only.some(r=>xlGet(r,'ingredients','steps','description','desc','prep (min)','prep','time','servings','emoji'));
+        if(looksLikeMeals) meals = only;
+      }
+      if(!meals){ alert(t('import_excel_bad')); return; }
+      const { payload, skipped } = excelRowsToPayload({
+        meals, pantry:xlSheet(wb,'pantry'), shopping:xlSheet(wb,'shopping'), schedule:xlSheet(wb,'schedule')
+      });
+      // Nothing named in the whole sheet: far likelier to be the wrong file than
+      // a deliberate "replace everything with nothing".
+      if(payload.menu.length===0){ alert(t('import_excel_bad')); return; }
+      if(!await askConfirm(t('import_confirm'), t('import_excel'))) return;
+      if(!applyPayload(payload)){ alert(t('import_excel_bad')); return; }
+      save(); renderMenu(); renderPantry(); renderShopping(); renderCalendar();
+      close(dataOverlay);
+      alert(t('import_done') + (skipped ? '\n\n' + t('import_excel_skipped', {n:skipped}) : ''));
+    };
+    reader.readAsArrayBuffer(file);
+  }, ()=>alert(t('excel_lib_fail')));
+}
+document.getElementById('importExcelBtn').addEventListener('click', ()=>document.getElementById('importExcelFile').click());
+document.getElementById('importExcelFile').addEventListener('change', e=>{ const f=e.target.files[0]; if(f) importExcel(f); e.target.value=''; });
+
+/* ============================================================
    FILE SYNC  —  keep one file up to date, wherever that file lives
    ------------------------------------------------------------
    The File System Access API lets the page hold on to a file the user picked and

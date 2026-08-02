@@ -90,7 +90,7 @@ upload to a new host, load the page once before walking away.
   [`ONEDRIVE-SETUP.md`](ONEDRIVE-SETUP.md) (OneDrive setup guide),
   [`USER-GUIDE.md`](USER-GUIDE.md) (how to use the app),
   `../.claude/launch.json` (starts a local static server for previewing)
-- **Tests:** serve the folder and open `http://localhost:8765/tests.html` — 286 unit + end-to-end
+- **Tests:** serve the folder and open `http://localhost:8765/tests.html` — 313 unit + end-to-end
   tests, no dependencies. See "How to develop / verify" near the end of this file.
 - **Run it:** double-click `index.html`, **or** serve the folder with `node serve.js` and open
   `http://localhost:8765`. A local server is recommended — browser storage behaves normally there,
@@ -263,6 +263,19 @@ favicon size — earlier, finer strokes vanished. If you edit one copy, edit the
     unrelated click later.
   - **Limits:** only the 3 visible chips are draggable (the "+N more" chip is not — you can't drag
     what you can't see), and there is no way to drag into another month; use the day modal for both.
+- **The day modal picks meals from a gallery**, not a `<select>` (changed 2026-08-02). `openDay()`
+  renders one `.pick-card` per meal — photo or emoji, name, description, prep time — into
+  `#d_mealPick`; the choice lives in `dayPickId` and is shown with `aria-pressed` on a real
+  `<button>`, so it is a toggle group the keyboard already understands rather than a hand-rolled
+  listbox. Three consequences worth knowing:
+  - **Nothing is selected on open.** The old `<select>` defaulted to its first option, so Add always
+    scheduled *something*; with pictures under the cursor that is a mis-click waiting to happen, so
+    Add says `need_pick_alert` instead. Clicking the chosen card again clears it.
+  - **The filter box (`#d_search`) appears only past `PICK_SEARCH_FROM` meals** — it is buying back
+    the type-ahead a native dropdown gave for free, which nothing needs at four meals. It reuses
+    `searchMeal()`, so it finds ingredients as well as names, exactly as the Menu tab does.
+  - `setLang()` already reopens an open day modal, which repaints the gallery — that is what keeps
+    the prep-time unit and the empty states in the current language.
 - **Batch cooking** (added 2026-07-25) — **🍲 Batch cook** in the recipe footer: pick a cook date,
   slot and how many meals it makes, and the following days are proposed automatically. Creates one
   batch plus one scheduled day per portion, all linked.
@@ -448,8 +461,8 @@ duplicate id breaks `getElementById` wiring silently rather than loudly.
 
 - **Preferences** — **Language** (EN / SL segmented toggle, inline SVG flags) and
   **Units** (Metric / Imperial).
-- **Data & sharing** — **Export JSON** / **Import JSON** (full fidelity), **Export Excel**
-  (Meals + Pantry + Shopping + Schedule sheets).
+- **Data & sharing** — **Export JSON** / **Import JSON** (full fidelity), **Export Excel** /
+  **Import Excel** (Meals + Pantry + Shopping + Schedule sheets).
 - **☁ OneDrive live sync** — see "Setup-required features" below.
 - **✨ AI assistant** — see below.
 
@@ -840,7 +853,12 @@ export download filenames → `mealmap-<date>.json/.xlsx`). Internal identifiers
   unchanged. Left alone deliberately rather than folded into an unrelated feature.
 - **localStorage** may be blocked in some `file://`/sandbox contexts; the app still runs (guarded)
   but won't persist there. Opening in a normal browser or via a local server persists fine.
-- **Excel export** loads SheetJS from a CDN (needs internet); JSON export works offline.
+- **Excel is a lossy round trip.** A workbook cannot carry an uploaded photo (base64 data URLs run
+  past Excel's ~32k cell limit, so the export writes `(uploaded photo)` and the import drops it) or
+  a batch link (never exported — those days import as ordinary scheduled meals). Meal ids are not
+  in the sheet either, so an Excel import mints new ones and re-links the Schedule rows **by meal
+  name**; a plan row naming a meal the sheet does not contain is dropped and the count reported.
+  JSON remains the faithful backup.
 - **AI + OneDrive are tested up to the network boundary, not past it.** Since 2026-07-25 the suite
   drives both through a fake `fetch`, covering which URL is called, the headers, the request body,
   and how each provider's success and error shapes are unpicked. What it cannot cover is the far
@@ -906,7 +924,7 @@ UI insisting there was no key while showing one. Whatever is on screen should be
 
 ### Test suite — `tests.html` (added 2026-07-25)
 
-Open <http://localhost:8765/tests.html>. **286 tests, no dependencies, no build step.** Green ticks
+Open <http://localhost:8765/tests.html>. **313 tests, no dependencies, no build step.** Green ticks
 and a tally at the top; a failure prints the expected/actual inline. The page also sets
 `window.__results = {total, pass, fail, failures[]}` and `window.__done`, so a script can poll it.
 

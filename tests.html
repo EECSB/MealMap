@@ -259,6 +259,15 @@ async function withAiKey(provider, fn, model){
   }
 }
 
+/* Captures what the app alerted. The harness silences alert() for the whole run,
+   so a test that cares which message came out has to listen for it. */
+async function withAlerts(fn){
+  const said = [], before = A.alert;
+  A.alert = m => said.push(m);
+  try{ await fn(said); } finally { A.alert = before; }   // fn gets the log, to wait on an async one
+  return said;
+}
+
 /* Drives the app's confirm modal, which askConfirm() awaits. */
 async function answerConfirm(yes){
   for(let i = 0; i < 50 && !$('#confirmOverlay.open'); i++) await wait(4);
@@ -1023,6 +1032,223 @@ test('the label is escaped into the SVG', () => {
 });
 
 /* ============================================================
+   UNIT — reading a spreadsheet back in
+   ------------------------------------------------------------
+   excelRowsToPayload() is the whole of the import that is worth testing on its
+   own: sheets of plain rows in, an applyPayload()-shaped object out. The rows
+   below are written exactly as exportExcel() writes them, so a change to either
+   side that breaks the round trip shows up here.
+   ============================================================ */
+group('Excel import');
+const XLMEAL = {
+  Name:'Mushroom Pasta', Category:'Main', Emoji:'🍝', 'Prep (min)':30, Servings:2,
+  Description:'Creamy and quick.',
+  Ingredients:'250g tagliatelle | 300g mushrooms | 2 cloves garlic',
+  Steps:'Boil the pasta. | Sear the mushrooms. | Combine.',
+  Image:'https://example.com/pasta.jpg', 'More photos':'https://example.com/2.jpg',
+  Source:'https://example.com/recipe', Calories:520, Protein:18, Carbs:70, Fat:16
+};
+test('a meal row comes back with its lists, photos and nutrition', () => {
+  const { payload } = A.excelRowsToPayload({ meals:[XLMEAL] });
+  eq(payload.menu.length, 1);
+  const m = payload.menu[0];
+  eq(m.name, 'Mushroom Pasta'); eq(m.category, 'Main'); eq(m.emoji, '🍝');
+  eq(m.time, 30); eq(m.servings, 2); eq(m.desc, 'Creamy and quick.');
+  eq(m.ingredients, ['250g tagliatelle','300g mushrooms','2 cloves garlic']);
+  eq(m.steps, ['Boil the pasta.','Sear the mushrooms.','Combine.']);
+  eq(m.images, ['https://example.com/pasta.jpg','https://example.com/2.jpg']);
+  eq(m.image, 'https://example.com/pasta.jpg');
+  eq(m.sourceUrl, 'https://example.com/recipe');
+  eq(m.nutrition, { calories:520, protein:18, carbs:70, fat:16 });
+  ok(m.id, 'a sheet carries no ids, so the import has to mint them');
+});
+test('the "(uploaded photo)" marker never comes back as an image', () => {
+  const { payload } = A.excelRowsToPayload({
+    meals:[{ Name:'Soup', Image:'(uploaded photo)', 'More photos':'(uploaded photo) | https://example.com/ok.jpg' }]
+  });
+  eq(payload.menu[0].images, ['https://example.com/ok.jpg']);
+  eq(payload.menu[0].image, 'https://example.com/ok.jpg');
+});
+test('a meal with nothing filled in keeps empty fields, not junk', () => {
+  const { payload } = A.excelRowsToPayload({ meals:[{ Name:'Toast' }] });
+  const m = payload.menu[0];
+  eq([m.time, m.servings, m.desc, m.category], ['', '', '', '']);
+  eq([m.ingredients, m.steps, m.images], [[], [], []]);
+  eq(m.nutrition, null, 'an empty nutrition block should not become zeroes');
+});
+test('blank rows and unnamed rows are skipped', () => {
+  // json_to_sheet writes a single empty row when there is nothing to export
+  const { payload } = A.excelRowsToPayload({ meals:[{}, { Name:'  ' }, { Name:'Real' }] });
+  eq(payload.menu.map(m => m.name), ['Real']);
+});
+test('headings match whatever case and wording the sheet used', () => {
+  const { payload } = A.excelRowsToPayload({
+    meals:[{ NAME:'Chilli', desc:'Hot.', time:45, PHOTO:'https://example.com/c.jpg' }]
+  });
+  const m = payload.menu[0];
+  eq(m.name, 'Chilli'); eq(m.desc, 'Hot.'); eq(m.time, 45);
+  eq(m.images, ['https://example.com/c.jpg']);
+});
+test('plan rows are linked to the meals by name', () => {
+  const { payload, skipped } = A.excelRowsToPayload({
+    meals:[XLMEAL, { Name:'Chickpea Curry' }],
+    schedule:[
+      { Date:'2026-07-09', Slot:'Dinner', Meal:'Mushroom Pasta' },
+      { Date:'2026-07-09', Slot:'Lunch',  Meal:'chickpea curry' }   // case is not a mismatch
+    ]
+  });
+  eq(skipped, 0);
+  const day = payload.schedule['2026-07-09'];
+  eq(day.length, 2);
+  eq(day[0].slot, 'dinner'); eq(day[1].slot, 'lunch');
+  eq(day[0].mealId, payload.menu[0].id);
+  eq(day[1].mealId, payload.menu[1].id);
+});
+test('a plan row naming a meal the sheet does not have is dropped and counted', () => {
+  const { payload, skipped } = A.excelRowsToPayload({
+    meals:[{ Name:'Soup' }],
+    schedule:[{ Date:'2026-07-09', Slot:'Dinner', Meal:'Something else' },
+              { Date:'',           Slot:'Dinner', Meal:'Soup' }]
+  });
+  eq(skipped, 2, 'a nameless meal and a dateless row both have nowhere to go');
+  eq(payload.schedule, {}, 'better no entry than one pointing at nothing');
+});
+test('slot labels are read in every language the app writes them in', () => {
+  eq(A.slotFromLabel('Breakfast'), 'breakfast');
+  eq(A.slotFromLabel('dinner'), 'dinner');
+  eq(A.slotFromLabel('Večerja'), 'dinner',  'a file exported in Slovenian');
+  eq(A.slotFromLabel('Abendessen'), 'dinner', '…or in German');
+  eq(A.slotFromLabel('Comida'), 'lunch',   '…or in Spanish');
+  eq(A.slotFromLabel('Almoço'), 'lunch',   '…or in Portuguese');
+  eq(A.slotFromLabel('  SNACK  '), 'snack');
+  eq(A.slotFromLabel('whatever'), 'dinner', 'an unreadable slot still belongs on the day');
+  eq(A.slotFromLabel(''), 'dinner');
+});
+test('dates arrive as text, as a real date cell, or as a serial number', () => {
+  eq(A.xlDateKey('2026-07-09'), '2026-07-09');
+  eq(A.xlDateKey('2026-7-9'), '2026-07-09', 'Excel drops the padding');
+  eq(A.xlDateKey(new Date(2026, 6, 9)), '2026-07-09');
+  eq(A.xlDateKey(''), '');
+  eq(A.xlDateKey('not a date'), '');
+  eq(A.xlDateKey('2026'), '2026-01-01', 'a bare year is not a 1905 serial number');
+});
+test('numbers survive a decimal comma without losing a thousands one', () => {
+  eq(A.xlNum('12,5'), 12.5,  'a European decimal comma');
+  eq(A.xlNum('1,200'), 1200, 'and not 1.2 — that would divide a calorie count by a thousand');
+  eq(A.xlNum(30), 30);
+  eq(A.xlNum(''), ''); eq(A.xlNum('about 20'), '');
+  const { payload } = A.excelRowsToPayload({ meals:[{ Name:'Stew', Calories:'1,200', 'Prep (min)':'12,5' }] });
+  eq(payload.menu[0].nutrition, { calories:1200 });
+  eq(payload.menu[0].time, 12.5);
+});
+test('the pantry and shopping sheets come back with their flags', () => {
+  const { payload } = A.excelRowsToPayload({
+    meals:[{ Name:'Soup' }],
+    pantry:[{ Name:'Olive oil', Quantity:'500 ml', Category:'Oils', 'Running low':'' },
+            { Name:'Milk', Quantity:'1 L', Category:'Dairy', 'Running low':'yes' },
+            { Name:'' }],
+    shopping:[{ Item:'Butter', Bought:'' }, { Item:'Eggs', Bought:'yes' }]
+  });
+  eq(payload.pantry.map(p => [p.name, p.qty, p.category, p.low]),
+     [['Olive oil','500 ml','Oils',false], ['Milk','1 L','Dairy',true]]);
+  eq(payload.shopping.map(s => [s.name, s.done]), [['Butter',false], ['Eggs',true]]);
+});
+test('what exportExcel writes is what the import reads', () => {
+  resetFixture();
+  A.addScheduledEntry(K(9), { mealId:'t_curry', slot:'lunch' });
+  // the rows exportExcel() builds, without going near a file
+  const meals = A.menu.map(m => ({
+    Name:m.name, Category:m.category||'', Emoji:m.emoji||'',
+    'Prep (min)':m.time||'', Servings:m.servings||'', Description:m.desc||'',
+    Ingredients:(m.ingredients||[]).join(' | '), Steps:(m.steps||[]).join(' | ')
+  }));
+  const schedule = [{ Date:K(9), Slot:A.slotLabel('lunch'), Meal:'Chickpea Curry' }];
+  const { payload, skipped } = A.excelRowsToPayload({ meals, schedule });
+  eq(skipped, 0);
+  eq(payload.menu.map(m => m.name), A.menu.map(m => m.name));
+  eq(payload.menu[2].ingredients, A.menu[2].ingredients, 'the " | " joining survives the round trip');
+  eq(payload.schedule[K(9)][0].slot, 'lunch');
+  eq(payload.version, A.SCHEMA_VERSION);
+  eq(payload.batches, [], 'a spreadsheet cannot carry batch links');
+});
+/* The rest of the path — a real .xlsx, the sheet lookup, the confirm, the apply.
+   The library is the one in lib/, loaded the same way the app loads it. */
+async function xlsxLib(){
+  return await new Promise((res, rej) =>
+    A.loadScript('lib/xlsx.full.min.js', () => res(A.XLSX), () => rej(new Error('xlsx did not load'))));
+}
+function xlsxFile(XLSX, sheets){
+  const wb = XLSX.utils.book_new();
+  Object.entries(sheets).forEach(([name, rows]) =>
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), name));
+  return new A.File([XLSX.write(wb, { bookType:'xlsx', type:'array' })], 'book.xlsx',
+                    { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+}
+test('a real workbook imports through the Settings button', async () => {
+  resetFixture();
+  const XLSX = await xlsxLib();
+  const file = xlsxFile(XLSX, {
+    Meals:[XLMEAL],
+    Schedule:[{ Date:K(9), Slot:'Dinner', Meal:'Mushroom Pasta' }],
+    Pantry:[{ Name:'Milk', Quantity:'1 L', 'Running low':'yes' }],
+    Shopping:[{ Item:'Eggs', Bought:'yes' }]
+  });
+  A.importExcel(file);
+  await answerConfirm(true);
+  eq(A.menu.map(m => m.name), ['Mushroom Pasta'], 'import replaces, as the confirm said it would');
+  eq(A.pantry.map(p => [p.name, p.low]), [['Milk', true]]);
+  eq(A.shopping.map(s => [s.name, s.done]), [['Eggs', true]]);
+  eq(A.schedule[K(9)].length, 1);
+  eq(A.byId(A.schedule[K(9)][0].mealId).name, 'Mushroom Pasta');
+  notOk($('#dataOverlay').classList.contains('open'), 'the panel closes on the way out');
+  resetFixture();
+});
+test('declining the confirm leaves everything alone', async () => {
+  resetFixture();
+  const XLSX = await xlsxLib();
+  A.importExcel(xlsxFile(XLSX, { Meals:[XLMEAL] }));
+  await answerConfirm(false);
+  eq(A.menu.length, 4, 'the fixture menu must still be there');
+  resetFixture();
+});
+test('a workbook with no meals in it is refused by name', async () => {
+  resetFixture();
+  const XLSX = await xlsxLib();
+  const said = await withAlerts(async log => {
+    A.importExcel(xlsxFile(XLSX, { Pantry:[{ Name:'Milk' }] }));
+    for(let i = 0; i < 80 && !log.length; i++) await wait(10);   // the FileReader, then the refusal
+  });
+  eq(said, [A.t('import_excel_bad')]);
+  eq(A.menu.length, 4, 'and nothing was replaced');
+  notOk($('#confirmOverlay.open'), 'it never got as far as asking');
+});
+test('a single-sheet CSV-style workbook is taken as the meals', async () => {
+  resetFixture();
+  const XLSX = await xlsxLib();
+  A.importExcel(xlsxFile(XLSX, { Sheet1:[{ Name:'Ramen', Description:'From a plain export.' }] }));
+  await answerConfirm(true);
+  eq(A.menu.map(m => m.name), ['Ramen']);
+  eq(A.menu[0].desc, 'From a plain export.');
+  resetFixture();
+});
+test('an Excel payload is one applyPayload() can take', () => {
+  resetFixture();
+  const { payload } = A.excelRowsToPayload({
+    meals:[XLMEAL], schedule:[{ Date:K(9), Slot:'Dinner', Meal:'Mushroom Pasta' }],
+    pantry:[{ Name:'Milk', 'Running low':'yes' }], shopping:[{ Item:'Eggs' }]
+  });
+  ok(A.applyPayload(payload));
+  eq(A.menu.map(m => m.name), ['Mushroom Pasta']);
+  eq(A.pantry.map(p => p.name), ['Milk']);
+  eq(A.shopping.map(s => s.name), ['Eggs']);
+  eq(A.schedule[K(9)].length, 1);
+  eq(A.byId(A.schedule[K(9)][0].mealId).name, 'Mushroom Pasta', 'the plan points at a meal that exists');
+  A.renderCalendar();
+  eq(dayCell(9).querySelectorAll('.meal-chip').length, 1);
+  resetFixture();
+});
+
+/* ============================================================
    UNIT — i18n
    ============================================================ */
 group('Translations');
@@ -1373,6 +1599,117 @@ test('a meal deleted from the menu still renders on the calendar', () => {
   A.renderCalendar();
   const chip = dayCell(9).querySelector('.meal-chip');
   ok(chip); eq(chip.textContent.trim(), A.t('removed_meal'));
+});
+
+group('E2E — the day modal meal gallery');
+test('the meals are shown as pictures with a title and a description', () => {
+  resetFixture();
+  A.openDay(K(9));
+  const cards = $$('#d_mealPick .pick-card');
+  eq(cards.length, A.menu.length, 'one card per meal');
+  notOk($('#d_meal'), 'the dropdown it replaced must be gone');
+  const first = cards[0];
+  eq(first.querySelector('.pick-name').textContent, 'Buttermilk Pancakes', 'sorted by name');
+  eq(first.querySelector('.pick-desc').textContent, 'Light stacked pancakes.');
+  ok(first.querySelector('.pick-thumb .emoji'), 'and something to look at');
+  A.close($('#dayOverlay'));
+});
+test('nothing is picked until you pick it', async () => {
+  resetFixture();
+  A.openDay(K(9));
+  eq($$('#d_mealPick .pick-card[aria-pressed="true"]').length, 0);
+  const said = await withAlerts(() => $('#d_add').click());
+  eq(said, [A.t('need_pick_alert')], 'Add must say what is missing rather than guess a meal');
+  notOk(K(9) in A.schedule, 'and must not schedule anything');
+  A.close($('#dayOverlay'));
+});
+test('picking a card and pressing Add schedules that meal', () => {
+  resetFixture();
+  A.openDay(K(9));
+  const card = $$('#d_mealPick .pick-card').find(c => c.querySelector('.pick-name').textContent === 'Chickpea Curry');
+  card.click();
+  eq(card.getAttribute('aria-pressed'), 'true');
+  $('#d_slot').value = 'lunch';
+  $('#d_add').click();
+  eq(A.schedule[K(9)].length, 1);
+  eq(A.schedule[K(9)][0].mealId, 't_curry');
+  eq(A.schedule[K(9)][0].slot, 'lunch');
+  eq($$('#schedList .sched-item').length, 1, 'and the day list repaints');
+  A.close($('#dayOverlay'));
+});
+test('clicking the picked card again clears the choice', async () => {
+  resetFixture();
+  A.openDay(K(9));
+  const card = $$('#d_mealPick .pick-card')[0];
+  card.click(); card.click();
+  eq(card.getAttribute('aria-pressed'), 'false');
+  const said = await withAlerts(() => $('#d_add').click());
+  eq(said, [A.t('need_pick_alert')]);
+  A.close($('#dayOverlay'));
+});
+test('reopening the modal starts from nothing picked', () => {
+  resetFixture();
+  A.openDay(K(9));
+  $$('#d_mealPick .pick-card')[0].click();
+  A.openDay(K(10));
+  eq($$('#d_mealPick .pick-card[aria-pressed="true"]').length, 0,
+     'yesterday\'s choice must not be armed on a new day');
+  A.close($('#dayOverlay'));
+});
+test('Surprise me ticks the card it landed on', () => {
+  resetFixture();
+  A.openDay(K(9));
+  $('#d_surprise').click();
+  const picked = $$('#d_mealPick .pick-card[aria-pressed="true"]');
+  eq(picked.length, 1, 'the roll should not be a mystery');
+  eq(picked[0].dataset.id, A.schedule[K(9)][0].mealId);
+  A.close($('#dayOverlay'));
+});
+test('the filter appears only once scrolling would be the slower way', () => {
+  resetFixture();
+  A.openDay(K(9));
+  ok($('#d_searchWrap').hidden, 'four meals need no search box');
+  A.menu = A.menu.concat(Array.from({length:8}, (_, i) => ({
+    id:'x'+i, name:'Zebra '+i, desc:'Filler.', ingredients:['aubergine']
+  })));
+  A.openDay(K(9));
+  notOk($('#d_searchWrap').hidden, 'twelve is past the point of scrolling for one');
+  eq($$('#d_mealPick .pick-card').length, 12);
+  A.close($('#dayOverlay'));
+});
+test('the filter matches names and ingredients, and says when nothing does', () => {
+  resetFixture();
+  A.menu = A.menu.concat(Array.from({length:8}, (_, i) => ({
+    id:'x'+i, name:'Zebra '+i, desc:'Filler.', ingredients:['aubergine']
+  })));
+  A.openDay(K(9));
+  const type = v => { $('#d_search').value = v; $('#d_search').dispatchEvent(new A.Event('input')); };
+  type('pancake');
+  eq($$('#d_mealPick .pick-name').map(e => e.textContent), ['Buttermilk Pancakes']);
+  type('aubergine');
+  eq($$('#d_mealPick .pick-card').length, 8, 'searching reaches the ingredients, as on the Menu tab');
+  eq($$('#d_mealPick .pick-desc').length, 8, 'and a card carries its description');
+  type('zzzznothing');
+  eq($('#d_mealPick .pick-empty').textContent, A.t('nomatch_title'));
+  A.close($('#dayOverlay'));
+});
+test('an empty menu says so where the cards would be', () => {
+  resetFixture();
+  A.menu = [];
+  A.openDay(K(9));
+  eq($('#d_mealPick .pick-empty').textContent, A.t('no_meals_option'));
+  ok($('#d_searchWrap').hidden);
+  A.close($('#dayOverlay'));
+});
+test('switching language repaints the gallery under the open modal', () => {
+  resetFixture();
+  A.openDay(K(9));
+  try{
+    eq($('#d_mealPick .pick-meta').textContent.trim(), '⏱️ 25 min');
+    A.setLang('de');
+    eq($('#d_mealPick .pick-meta').textContent.trim(), '⏱️ 25 Min.',
+       'a stale gallery would still be showing the English unit');
+  } finally { A.setLang('en'); A.close($('#dayOverlay')); }
 });
 
 group('E2E — dragging a meal between days');

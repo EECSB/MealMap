@@ -36,13 +36,18 @@
         <small data-i18n="brand_sub">Recipes &amp; meal planning</small>
       </div>
     </div>
-    <nav class="tabs">
-      <button class="tab active" data-view="menu" data-i18n="tab_menu">🍽️ Menu</button>
-      <button class="tab" data-view="pantry" data-i18n="tab_pantry">🥫 Pantry</button>
-      <button class="tab" data-view="shopping" data-i18n="tab_shop">🛒 Shopping</button>
-      <button class="tab" data-view="calendar" data-i18n="tab_calendar">📅 Calendar</button>
-    </nav>
-    <button class="hbtn" id="dataBtn" data-i18n="settings_btn">⚙️ Settings</button>
+    <!-- Wrapper is display:contents on desktop, so the tab strip and Settings lay
+         out exactly as if it were not here. On a phone it becomes the one pill that
+         holds all five buttons — Settings included — instead of a stray third row. -->
+    <div class="nav-wrap">
+      <nav class="tabs">
+        <button class="tab active" data-view="menu" data-i18n="tab_menu">🍽️ Menu</button>
+        <button class="tab" data-view="pantry" data-i18n="tab_pantry">🥫 Pantry</button>
+        <button class="tab" data-view="shopping" data-i18n="tab_shop">🛒 Shopping</button>
+        <button class="tab" data-view="calendar" data-i18n="tab_calendar">📅 Calendar</button>
+      </nav>
+      <button class="hbtn" id="dataBtn" data-i18n="settings_btn">⚙️ Settings</button>
+    </div>
   </div>
 </header>
 
@@ -344,8 +349,18 @@
     </div>
     <div class="modal-body">
       <div class="sched-list" id="schedList"></div>
+      <!-- Choosing what to eat is the decision this modal exists for, so it gets the
+           room: the meals as pictures you can recognise, rather than a dropdown of
+           names you had to remember. -->
+      <div class="pick-head">
+        <span class="pick-label" data-i18n="dish">Meal</span>
+        <div class="search pick-search" id="d_searchWrap" hidden>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+          <input type="text" id="d_search" data-i18n-ph="search_ph" placeholder="Search meals or ingredients…">
+        </div>
+      </div>
+      <div class="meal-pick" id="d_mealPick"></div>
       <div class="add-sched">
-        <div class="field"><label data-i18n="dish">Meal</label><select id="d_meal"></select></div>
         <div class="field" style="max-width:140px"><label data-i18n="slot">Slot</label>
           <select id="d_slot">
             <option value="breakfast" data-i18n="slot_breakfast">Breakfast</option>
@@ -524,7 +539,9 @@
         <button class="btn ghost" id="exportJsonBtn" data-i18n="export_json">⬇ Export JSON</button>
         <button class="btn ghost" id="importJsonBtn" data-i18n="import_json">⬆ Import JSON</button>
         <button class="btn ghost" id="exportExcelBtn" data-i18n="export_excel">⬇ Export Excel</button>
+        <button class="btn ghost" id="importExcelBtn" data-i18n="import_excel">⬆ Import Excel</button>
         <input type="file" id="importFile" accept="application/json,.json" hidden>
+        <input type="file" id="importExcelFile" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden>
       </div>
       <p class="muted-note" style="text-align:left; margin-top:16px" data-i18n="share_hint">JSON keeps everything exactly; Excel is a readable copy. Import replaces current data.</p>
 
