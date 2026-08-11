@@ -1,0 +1,3234 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MealMap — test suite</title>
+<style>
+  :root{
+    --bg:#f6f1ea; --surface:#fff; --ink:#2a2521; --muted:#8a8178; --line:#e9ded0;
+    --pass:#3f7d54; --fail:#c0392b; --accent:#c75d3c;
+  }
+  *{box-sizing:border-box}
+  body{margin:0; font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+       background:var(--bg); color:var(--ink); padding:24px}
+  h1{font-size:22px; margin:0 0 4px}
+  .sub{color:var(--muted); margin:0 0 20px}
+  #summary{position:sticky; top:0; z-index:5; background:var(--bg); padding:12px 0 14px; border-bottom:1px solid var(--line); margin-bottom:16px}
+  .tally{display:inline-flex; gap:16px; align-items:baseline; font-size:16px; font-weight:600}
+  .tally .ok{color:var(--pass)} .tally .no{color:var(--fail)} .tally .dim{color:var(--muted); font-weight:400; font-size:13px}
+  .bar{height:6px; border-radius:3px; background:var(--line); overflow:hidden; margin-top:10px; max-width:640px}
+  .bar > i{display:block; height:100%; background:var(--pass); width:0; transition:width .2s}
+  .bar.bad > i{background:var(--fail)}
+  h2{font-size:14px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted);
+     margin:22px 0 8px; font-weight:700}
+  .t{display:flex; gap:9px; align-items:flex-start; padding:3px 0; font-size:13.5px}
+  .t .mark{flex:none; width:15px; font-weight:700}
+  .t.pass .mark{color:var(--pass)} .t.fail .mark{color:var(--fail)}
+  .t.fail{color:var(--fail)}
+  .why{margin:3px 0 8px 24px; padding:8px 11px; background:#fdecec; border-left:3px solid var(--fail);
+       border-radius:0 7px 7px 0; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px; white-space:pre-wrap}
+  #app{position:fixed; left:-10000px; top:0; width:1280px; height:900px; border:0}
+  .note{max-width:640px; color:var(--muted); font-size:12.5px; margin-top:26px; padding-top:14px; border-top:1px solid var(--line)}
+  code{background:#00000010; padding:1px 4px; border-radius:4px}
+</style>
+</head>
+<body>
+
+<h1>MealMap — test suite</h1>
+<p class="sub">Unit tests for the pure logic, end-to-end tests driving the real UI. No dependencies, no build step — just open this file from the dev server.</p>
+
+<div id="summary"><span class="tally"><span class="dim">running…</span></span><div class="bar"><i></i></div></div>
+<div id="results"></div>
+
+<p class="note">
+  The app runs in a hidden iframe. <strong>Persistence is stubbed for the whole run</strong> —
+  <code>putKey</code>, the single choke point for every write, is replaced with a recorder — so no
+  test can reach your real <code>localStorage</code> or IndexedDB data, while the save logic above
+  it stays under test. Two of the tests below assert exactly that. Every test starts from a fixed
+  fixture, so tests cannot leak into one another.
+</p>
+
+<iframe id="app" src="index.html"></iframe>
+
+<script>
+/* ============================================================
+   Tiny test framework
+   ============================================================ */
+const TESTS = [];
+let GROUP = '';
+function group(g){ GROUP = g; }
+function test(name, fn){ TESTS.push({ group: GROUP, name, fn }); }
+
+class Failure extends Error {}
+function fail(msg){ throw new Failure(msg); }
+function ok(cond, msg){ if(!cond) fail(msg || 'expected a truthy value'); }
+function notOk(cond, msg){ if(cond) fail(msg || 'expected a falsy value'); }
+const show = v => typeof v === 'string' ? JSON.stringify(v) : JSON.stringify(v) ?? String(v);
+function eq(actual, expected, msg){
+  if(JSON.stringify(actual) !== JSON.stringify(expected))
+    fail((msg ? msg + '\n' : '') + 'expected: ' + show(expected) + '\n  actual: ' + show(actual));
+}
+function near(actual, expected, tol, msg){
+  if(Math.abs(actual - expected) > (tol ?? 1e-9))
+    fail((msg ? msg + '\n' : '') + 'expected ' + expected + ' ±' + tol + ', got ' + actual);
+}
+function throws(fn, msg){
+  try{ fn(); }catch(e){ return; }
+  fail(msg || 'expected it to throw, but it did not');
+}
+
+/* ============================================================
+   App handle
+   ------------------------------------------------------------
+   The app is one classic <script>, so its `let`/`const` globals (menu, schedule,
+   batches, I18N, DRAG, …) live in the global *lexical* environment and are NOT
+   properties of `window` — `frame.contentWindow.menu` is undefined. Only
+   `function` declarations end up on the window object.
+
+   So `A` is a proxy that resolves every name by evaluating it *inside* the app's
+   realm, where the lexical bindings are visible. Reading goes through
+   `new win.Function('return menu')`; writing through
+   `new win.Function('v', 'menu = v')`. Both are cached.
+
+   Resolving lexically first also avoids a trap: any element with an id becomes a
+   window property, so a plain `win.menuGrid` could hand back the element rather
+   than the const that shadows it.
+   ============================================================ */
+let A = null;
+function appBridge(win){
+  const getters = new Map(), setters = new Map();
+  return new Proxy({}, {
+    has(){ return true; },
+    get(_, prop){
+      if(typeof prop !== 'string') return undefined;
+      let g = getters.get(prop);
+      if(!g){
+        try{ g = new win.Function('return ' + prop); }catch(e){ g = () => undefined; }
+        getters.set(prop, g);
+      }
+      try{ return g(); }
+      catch(e){ return win[prop]; }        // not a binding at all (e.g. a probe for `then`)
+    },
+    set(_, prop, value){
+      let s = setters.get(prop);
+      if(!s){
+        try{ s = new win.Function('__v', prop + ' = __v'); }catch(e){ s = null; }
+        setters.set(prop, s);
+      }
+      try{ if(s) s(value); else win[prop] = value; }
+      catch(e){ win[prop] = value; }       // assigning a const throws; fall back to the window
+      return true;
+    }
+  });
+}
+
+/* ============================================================
+   Fixtures
+   ============================================================ */
+const FIXTURE = {
+  menu: [
+    { id:'t_pancake', name:'Buttermilk Pancakes', category:'Breakfast', emoji:'🥞', time:25, servings:4,
+      desc:'Light stacked pancakes.',
+      ingredients:['200g flour','2 tbsp sugar','1 egg','300ml buttermilk','2 tbsp melted butter','Pinch of salt'],
+      steps:['Whisk the dry things.','Fold in the wet.','Fry until golden.'] },
+    { id:'t_pasta', name:'Mushroom Pasta', category:'Main', emoji:'🍝', time:30, servings:2,
+      desc:'Creamy and quick.',
+      ingredients:['250g tagliatelle','300g mushrooms, sliced','2 cloves garlic','200ml cream','Olive oil'],
+      steps:['Boil the pasta.','Sear the mushrooms.','Combine.'] },
+    { id:'t_curry', name:'Chickpea Curry', category:'Main', emoji:'🍛', time:40, servings:4,
+      desc:'Better the next day.',
+      ingredients:['2 cans chickpeas','1 onion','2 cloves garlic','400ml coconut milk','2 tbsp curry powder'],
+      steps:['Fry the onion.','Add everything else.','Simmer.'] },
+    { id:'t_salad', name:'Garden Salad', category:'Side', emoji:'🥗', time:15, servings:4,
+      ingredients:['1 lettuce','2 tomatoes','1 cucumber','Olive oil'], steps:['Chop.','Toss.'] }
+  ],
+  pantry: [
+    { id:'p_oil',   name:'Olive oil',   category:'Oils',   emoji:'🫒' },
+    { id:'p_garlic',name:'Garlic',      category:'Veg',    emoji:'🧄' },
+    { id:'p_salt',  name:'Salt',        category:'Basics', emoji:'🧂' },
+    { id:'p_eggs',  name:'Eggs',        category:'Dairy',  emoji:'🥚' },
+    { id:'p_milk',  name:'Milk',        category:'Dairy',  emoji:'🥛', low:true }
+  ],
+  schedule: {},
+  shopping: [],
+  batches: []
+};
+
+let stubbedSaves = 0;
+let REAL_PUT_KEY = null;      // the genuine putKey, for tests that want a real write to a scratch key
+const PUT_LOG = [];           // keys the stubbed putKey was asked to write
+function resetFixture(){
+  A.menu     = JSON.parse(JSON.stringify(FIXTURE.menu));
+  A.pantry   = JSON.parse(JSON.stringify(FIXTURE.pantry));
+  A.schedule = JSON.parse(JSON.stringify(FIXTURE.schedule));
+  A.shopping = JSON.parse(JSON.stringify(FIXTURE.shopping));
+  A.batches  = JSON.parse(JSON.stringify(FIXTURE.batches));
+  A.calDate  = new Date(2026, 6, 1);          // July 2026, a month with a Wednesday 1st
+  A.currentRecipeId = null;
+  A.recipeServings = null;
+  A.favOnly = false;
+  A.setUnits('metric');
+  A.setLang('en');
+  A.exitCookMode();
+  A.searchInput.value = '';
+  A.categoryFilter.value = '';
+  A.document.querySelectorAll('.overlay.open').forEach(o=>A.close(o));
+  A.renderMenu(); A.renderPantry(); A.renderShopping(); A.renderCalendar();
+}
+
+// July 2026 date keys, so tests never depend on when they are run.
+const K = d => '2026-07-' + String(d).padStart(2, '0');
+const $  = sel => A.document.querySelector(sel);
+const $$ = sel => [...A.document.querySelectorAll(sel)];
+const vis = el => !!el && el.offsetParent !== null;
+const wait = ms => new Promise(r => setTimeout(r, ms));
+
+/* save() now takes the stores a call site touched, so `menu` (which carries the
+   photos) is not serialised when all that changed was a shopping tick. Getting
+   that list wrong would silently fail to persist something, so rather than trust
+   each call site, this derives what *actually* changed by diffing every store
+   around the action and fails if a narrowed save missed any of it.
+   PUT_LOG is what the stubbed putKey was asked to write. */
+async function auditSave(action){
+  const before = A.STORES.map(s => [s.key, JSON.stringify(s.get())]);
+  PUT_LOG.length = 0;
+  await action();
+  const changed = before
+    .filter(([key, was]) => JSON.stringify(A.STORES.find(s => s.key === key).get()) !== was)
+    .map(([key]) => key);
+  const missed = changed.filter(key => !PUT_LOG.includes(key));
+  eq(missed, [], 'these stores changed but were not saved');
+  return { changed, written: [...new Set(PUT_LOG)] };
+}
+
+/* ---------- fake fetch ----------
+   The AI and OneDrive paths are the only substantial code that cannot be run for
+   real: they need live credentials and, for OneDrive, an https origin. Swapping
+   `fetch` lets everything up to the network boundary be tested — which URL is
+   called, what headers go with it, what the body says, and how each provider's
+   response and error shapes are unpicked.
+   `reply` is a function of (url, opts) returning {status?, json?, text?}. */
+function fakeFetch(reply){
+  const calls = [];
+  const real = A.fetch;
+  A.fetch = async (url, opts = {}) => {
+    calls.push({ url: String(url), opts, headers: opts.headers || {},
+                 body: opts.body ? JSON.parse(opts.body) : null });
+    const r = (typeof reply === 'function' ? reply(String(url), opts) : reply) || {};
+    const status = r.status ?? 200;
+    const text = r.text ?? JSON.stringify(r.json ?? {});
+    return { ok: status >= 200 && status < 300, status,
+             json: async () => (r.json ?? JSON.parse(text)), text: async () => text };
+  };
+  return { calls, restore(){ A.fetch = real; } };
+}
+async function withFetch(reply, fn){
+  const f = fakeFetch(reply);
+  try{ return await fn(f.calls); } finally { f.restore(); }
+}
+/* A minimal well-formed recipe, as a provider would hand it back. */
+const AI_RECIPE = {
+  name:'Testna jed', category:'Main', emoji:'🍲', time:35, servings:4,
+  desc:'Ena poved.', ingredients:['500 g moke','2 jajci'], steps:['Zmešaj.','Speci.'],
+  image:null, images:[], sourceUrl:'https://example.test/r', nutrition:null
+};
+/* Runs fn with a throwaway provider/key in place, then puts back whatever was
+   there — the user may have a real API key stored, and these tests must not
+   leave it changed even if one of them throws.
+
+   The key box is set as well as storage, and not only for tidiness: the box now
+   outranks storage, and the iframe fills it from the real stored key at boot.
+   Seeding storage alone would leave a genuine key in the box for aiKeyVal() to
+   pick up, so these tests would pass on a machine with no key and fail on the
+   author's — while quietly putting their real key into the assertions. */
+const AI_SETTINGS = ['aiProvider','aiKey','aiModel'];
+async function withAiKey(provider, fn, model){
+  const saved = AI_SETTINGS.map(k => [A.STORE[k], A.localStorage.getItem(A.STORE[k])]);
+  const box = WIN.document.getElementById('aiKey');
+  const savedBox = box.value;
+  try{
+    A.localStorage.setItem(A.STORE.aiProvider, provider);
+    A.localStorage.setItem(A.STORE.aiKey, 'TEST-KEY-NOT-REAL');
+    A.localStorage.setItem(A.STORE.aiModel, model || '');
+    box.value = 'TEST-KEY-NOT-REAL';
+    return await fn();
+  } finally {
+    saved.forEach(([k, v]) => v === null ? A.localStorage.removeItem(k) : A.localStorage.setItem(k, v));
+    box.value = savedBox;
+  }
+}
+
+/* Captures what the app alerted. The harness silences alert() for the whole run,
+   so a test that cares which message came out has to listen for it. */
+async function withAlerts(fn){
+  const said = [], before = A.alert;
+  A.alert = m => said.push(m);
+  try{ await fn(said); } finally { A.alert = before; }   // fn gets the log, to wait on an async one
+  return said;
+}
+
+/* Drives the app's confirm modal, which askConfirm() awaits. */
+async function answerConfirm(yes){
+  for(let i = 0; i < 50 && !$('#confirmOverlay.open'); i++) await wait(4);
+  ok($('#confirmOverlay.open'), 'expected the confirm modal to open');
+  $(yes ? '#confirmYes' : '#confirmNo').click();
+  await wait(10);
+}
+
+/* Synthesises a pointer drag over the calendar. Mouse arms on distance,
+   touch arms on a hold — both paths are exercised below. */
+function pointerAt(type, x, y, opts = {}){
+  const target = opts.on || A.document.elementFromPoint(x, y) || A.document;
+  target.dispatchEvent(new A.PointerEvent(type, {
+    clientX:x, clientY:y, pointerId:opts.pointerId ?? 1, pointerType:opts.pointerType || 'mouse',
+    button:0, buttons: type === 'pointerup' ? 0 : 1, bubbles:true, cancelable:true
+  }));
+}
+const dayCell = d => $(`.day[data-date="${K(d)}"]`);
+const centreOf = el => { const r = el.getBoundingClientRect(); return [r.left + r.width/2, r.top + r.height/2]; };
+/* A drag is measured with getBoundingClientRect and resolved with
+   elementFromPoint, so the calendar has to actually be laid out. While
+   #calendarView is display:none its boxes are all zero-sized and every drag
+   silently lands nowhere. */
+function showCalendar(){
+  $('.tab[data-view="calendar"]').click();
+  ok(centreOf(dayCell(1))[1] > 0, 'the calendar must be visible for a drag to be meaningful');
+}
+function dragChip(fromDay, toDay, chipIndex = 0){
+  showCalendar();
+  const chip = dayCell(fromDay).querySelectorAll('.meal-chip[data-i]')[chipIndex];
+  ok(chip, 'no chip to drag on day ' + fromDay);
+  const [cx, cy] = centreOf(chip), [tx, ty] = centreOf(dayCell(toDay));
+  pointerAt('pointerdown', cx, cy, { on: chip });
+  pointerAt('pointermove', cx + 20, cy);
+  pointerAt('pointermove', tx, ty);
+  pointerAt('pointerup',   tx, ty);
+}
+
+/* ============================================================
+   UNIT — quantities
+   ============================================================ */
+group('Quantities — parsing');
+// `unitText` carries the line's own measure word when it differs from the
+// canonical one — empty for English, which is why it reads as noise here.
+test('reads a plain amount, a unit and the rest', () => {
+  eq(A.parseQty('500 g potatoes'), { qty:500, unit:'g', unitText:'', rest:'potatoes' });
+});
+test('reads a mixed fraction', () => {
+  eq(A.parseQty('1 1/2 kg potatoes'), { qty:1.5, unit:'kg', unitText:'', rest:'potatoes' });
+});
+test('reads a vulgar fraction', () => {
+  eq(A.parseQty('½ cup sugar'), { qty:0.5, unit:'cup', unitText:'', rest:'sugar' });
+});
+test('reads a decimal comma', () => {
+  eq(A.parseQty('1,5 l milk'), { qty:1.5, unit:'l', unitText:'', rest:'milk' });
+});
+test('a bare noun after the number is the ingredient, not a unit', () => {
+  eq(A.parseQty('2 eggs'), { qty:2, unit:'', unitText:'', rest:'eggs' });
+});
+test('singularises the unit so cup and cups group together', () => {
+  eq(A.parseQty('2 cups flour').unit, 'cup');
+});
+test('an amount with nothing after it is not an ingredient', () => {
+  eq(A.parseQty('500 g'), null);
+});
+test('a line with no leading amount returns null', () => {
+  eq(A.parseQty('Salt to taste'), null);
+});
+
+group('Quantities — arithmetic');
+test('adds like units', () => eq(A.addQty({qty:2,unit:'g'}, {qty:3,unit:'g'}), {qty:5,unit:'g'}));
+test('adds across a unit family, converting to the base', () => {
+  eq(A.addQty({qty:1,unit:'kg'}, {qty:500,unit:'g'}), {qty:1500,unit:'g'});
+});
+test('refuses to add different families', () => {
+  eq(A.addQty({qty:1,unit:'g'}, {qty:1,unit:'ml'}), null);
+});
+test('refuses to add a count to a weight', () => {
+  eq(A.addQty({qty:1,unit:'clove'}, {qty:1,unit:'g'}), null);
+});
+test('tidies grams up to kilos past 1000', () => eq(A.tidyQty({qty:1200,unit:'g'}), {qty:1.2,unit:'kg'}));
+test('leaves a comfortable amount alone', () => eq(A.tidyQty({qty:800,unit:'g'}), {qty:800,unit:'g'}));
+test('pluralises only spelled-out counting words', () => {
+  eq(A.pluralUnit('clove', 3), 'cloves');
+  eq(A.pluralUnit('g', 500), 'g',    'grams must stay "g"');
+  eq(A.pluralUnit('tbsp', 4), 'tbsp','tbsp must stay "tbsp"');
+  eq(A.pluralUnit('clove', 1), 'clove');
+  eq(A.pluralUnit('pinch', 2), 'pinches', 'ch takes -es');
+});
+test('formats without floating-point dust', () => {
+  eq(A.fmtQty(0.1 + 0.2), '0.3');
+  eq(A.fmtQty(1.005), '1');
+});
+
+group('Quantities — combining a shopping list');
+test('sums the same ingredient from several meals', () => {
+  eq(A.combineIngredients(['2 cloves garlic','3 cloves garlic']), ['5 cloves garlic']);
+});
+test('sums across units and tidies the total', () => {
+  eq(A.combineIngredients(['500 g flour','1 kg flour']), ['1.5 kg flour']);
+});
+test('keeps the wording of the larger amount', () => {
+  eq(A.combineIngredients(['1 onion','2 onions']), ['3 onions']);
+});
+test('leaves un-addable lines as they were, rather than guessing', () => {
+  const out = A.combineIngredients(['2 cloves garlic','1 head garlic']);
+  eq(out.length, 2, 'cloves + heads cannot be added');
+});
+test('a single occurrence is passed through untouched', () => {
+  eq(A.combineIngredients(['2 cloves garlic']), ['2 cloves garlic']);
+});
+test('counts two identical lines as two', () => {
+  eq(A.combineIngredients(['1 slice bread','1 slice bread']), ['2 slices bread']);
+});
+
+group('Quantities — measure words beyond English');
+test('an accented measure word is not sliced in half', () => {
+  // With the old [a-zA-Z] unit pattern this matched only "plo" and glued the
+  // rest back on as " čevinke", corrupting the line and its signature.
+  const p = A.parseQty('3 pločevinke polovičk breskev');
+  eq(p.qty, 3);
+  eq(p.rest, 'polovičk breskev');
+  notOk(/plo /.test(p.rest), 'the word must survive intact');
+});
+test('measure words in the other languages are recognised as units', () => {
+  [['2 žlici olja','tbsp'], ['1 žlička soli','tsp'], ['1 ščepec soli','pinch'],
+   ['3 stroki česna','clove'], ['3 pločevinke breskev','can'],
+   ['2 EL Öl','tbsp'], ['1 Prise Salz','pinch'], ['2 Zehen Knoblauch','clove'],
+   ['2 cucharadas de aceite','tbsp'], ['1 pizca de sal','pinch'],
+   ['2 cuillères d’huile','tbsp'], ['1 gousse d’ail','clove'],
+   ['2 cucchiai di olio','tbsp'], ['1 spicchio di aglio','clove'],
+   ['2 colheres de azeite','tbsp'], ['1 pitada de sal','pinch']]
+    .forEach(([line, unit]) => eq(A.parseQty(line).unit, unit, line));
+});
+test('Slovenian duals are covered, not just singular and plural', () => {
+  ['žlica','žlici','žlice','žlic'].forEach(w => eq(A.parseQty('2 ' + w + ' olja').unit, 'tbsp', w));
+  ['pločevinka','pločevinki','pločevinke','pločevink'].forEach(w =>
+    eq(A.parseQty('2 ' + w + ' breskev').unit, 'can', w));
+});
+test('the line keeps its own measure word when it is added up', () => {
+  eq(A.combineIngredients(['2 žlici olja','1 žlica olja']), ['3 žlici olja']);
+  eq(A.combineIngredients(['3 pločevinke breskev','2 pločevinki breskev']), ['5 pločevinke breskev']);
+  eq(A.scaleIngredient('2 žlici olja', 2), '4 žlici olja', 'not "4 tbsp olja"');
+});
+test('English lines are untouched by any of that', () => {
+  eq(A.parseQty('500 g flour'), { qty:500, unit:'g', unitText:'', rest:'flour' });
+  eq(A.parseQty('2 cups flour').unit, 'cup');
+  eq(A.parseQty('2 eggs'), { qty:2, unit:'', unitText:'', rest:'eggs' });
+  eq(A.combineIngredients(['1 can beans','2 cans beans']), ['3 cans beans']);
+  eq(A.scaleIngredient('1 can beans', 2), '2 cans beans');
+});
+
+group('Quantities — one line per ingredient, across languages');
+test('the same staple in two languages becomes one summed line', () => {
+  const cases = [
+    [['500 g flour','480 g moke'],                          '980 g flour'],
+    [['400 ml coconut milk','400 ml kokosovega mleka'],      '800 ml coconut milk'],
+    [['300 ml buttermilk','200 ml pinjenca'],                '500 ml buttermilk'],
+    [['1 tsp baking powder','1 žlička pecilnega praška'],    '2 tsp baking powder'],
+    [['2 tbsp olive oil','2 žlici oljčnega olja'],           '4 tbsp olive oil'],
+  ];
+  cases.forEach(([lines, want]) => eq(A.combineIngredients(lines), [want], lines.join(' + ')));
+});
+test('a Slovenian and an English pantry item share one signature', () => {
+  [['flour','moke'], ['milk','mleka'], ['sugar','sladkorja'], ['butter','masla'],
+   ['eggs','jajca'], ['tomatoes','tomates'], ['onion','cebula']]
+    .forEach(([en, other]) => eq(A.ingSignature(other), A.ingSignature(en), other + ' vs ' + en));
+});
+test('grouping stays as strict as matching — these must not merge', () => {
+  const apart = [
+    ['1 l milk','400 ml kokosovega mleka'],
+    ['1 l milk','300 ml pinjenca'],
+    ['200 ml cream','200 g kisle smetane'],
+    ['200 g sour cream','200 g crème fraîche'],
+    ['500 g flour','50 g koruzne moke'],
+    ['100 ml olja','2 žlici oljčnega olja'],
+    ['10 g soli','200 g solate'],
+  ];
+  apart.forEach(lines => eq(A.combineIngredients(lines).length, 2, lines.join(' + ') + ' must stay apart'));
+});
+test('canonName is a function of the word alone, so grouping is an equivalence', () => {
+  // Order must not decide who groups with whom — that is why grouping uses a
+  // signature rather than the deliberately fuzzy wordsMatch.
+  const words = ['moke','flour','mleka','milk','soli','salt','tomate','tomato','solata'];
+  words.forEach(a => words.forEach(b => {
+    if(A.canonName(a) === A.canonName(b)) eq(A.canonName(b), A.canonName(a), a + '/' + b);
+  }));
+  eq(A.canonName('moke'), 'flour');
+  eq(A.canonName('flour'), 'flour');
+  eq(A.canonName('solata'), 'solata', 'salad must not be pulled onto salt');
+});
+test('no two synonym keys sharing a root disagree on meaning', () => {
+  // If they did, a word inflected off both could canonicalise either way and
+  // grouping would stop being deterministic.
+  const keys = Object.keys(A.SYNONYMS), clashes = [];
+  keys.forEach((a, i) => keys.slice(i + 1).forEach(b => {
+    if(A.sharesRoot(a, b) && A.SYNONYMS[a] !== A.SYNONYMS[b])
+      clashes.push(a + '(' + A.SYNONYMS[a] + ') vs ' + b + '(' + A.SYNONYMS[b] + ')');
+  }));
+  eq(clashes, []);
+});
+
+group('Quantities — scaling a recipe');
+test('doubles an amount', () => eq(A.scaleIngredient('250g tagliatelle', 2), '500 g tagliatelle'));
+test('promotes to a larger unit when it gets big', () => eq(A.scaleIngredient('500 g flour', 3), '1.5 kg flour'));
+test('pluralises a scaled count', () => eq(A.scaleIngredient('1 can beans', 2), '2 cans beans'));
+test('leaves a line with no amount alone', () => eq(A.scaleIngredient('Salt to taste', 3), 'Salt to taste'));
+test('a factor of 1 is a no-op, byte for byte', () => eq(A.scaleIngredient('250g tagliatelle', 1), '250g tagliatelle'));
+test('halves cleanly', () => eq(A.scaleIngredient('2 cloves garlic', 0.5), '1 clove garlic'));
+
+/* ============================================================
+   UNIT — units conversion
+   ============================================================ */
+group('Units — metric ⇄ imperial');
+test('metric mode leaves metric text untouched', () => {
+  A.setUnits('metric');
+  eq(A.convUnits('500 g flour'), '500 g flour');
+});
+test('converts grams to ounces', () => {
+  A.setUnits('imperial');
+  ok(/oz/.test(A.convUnits('100 g flour')), 'expected oz, got ' + A.convUnits('100 g flour'));
+});
+test('converts a fraction without mangling it (the 1/4 in → 1/10.2 cm bug)', () => {
+  A.setUnits('metric');
+  const got = A.convUnits('1/4 in thick');
+  notOk(/\//.test(got), 'a converted fraction must not keep its slash: ' + got);
+  ok(/cm/.test(got), 'expected cm, got ' + got);
+  near(parseFloat(got), 0.6, 0.1);
+});
+test('converting is display-only and never rewrites the stored recipe', () => {
+  resetFixture();
+  const before = JSON.stringify(A.menu);
+  A.setUnits('imperial'); A.setUnits('metric');
+  eq(JSON.stringify(A.menu), before, 'the stored meal changed during a unit toggle');
+});
+test('a vulgar fraction converts as a number', () => {
+  A.setUnits('metric');
+  const got = A.convUnits('½ in');
+  ok(/cm/.test(got) && !/½/.test(got), got);
+});
+
+/* ============================================================
+   UNIT — the ingredient matcher
+   ============================================================ */
+group('Matcher — folding and stemming');
+test('folds accents so "cebula" finds "čebula"', () => eq(A.foldText('Čebula'), 'cebula'));
+test('folds ß and ł', () => { eq(A.foldText('Weißmehl'), 'weissmehl'); eq(A.foldText('Łosoś'), 'losos'); });
+test('drops quantities and single letters from words', () => eq(A.rawWords('200g plain flour'), ['plain','flour']));
+test('stems regular plurals', () => {
+  eq(A.stemWord('eggs'), 'egg');
+  eq(A.stemWord('tomatoes'), 'tomato');
+  eq(A.stemWord('berries'), 'berry');
+});
+test('leaves words that merely end in s', () => {
+  eq(A.stemWord('glass'), 'glass');
+  eq(A.stemWord('hummus'), 'hummus');
+});
+
+group('Matcher — words');
+test('matches a word with itself', () => ok(A.wordsMatch('egg','egg')));
+test('matches singular against plural', () => ok(A.wordsMatch('egg','eggs')));
+test('matches through the synonym table', () => ok(A.wordsMatch('aubergine','eggplant')));
+test('matches a Slovenian case ending', () => ok(A.wordsMatch('skuta','skute')));
+test('does NOT match different words that share a root', () => {
+  notOk(A.wordsMatch('pea','pear'),        'pea/pear');
+  notOk(A.wordsMatch('sol','solata'),      'sol/solata');
+  notOk(A.wordsMatch('chicken','chickpea'),'chicken/chickpea');
+});
+
+group('Matcher — across languages');
+test('a Slovenian ingredient matches an English pantry staple', () => {
+  const pairs = [['mleko','milk'],['moka','flour'],['sladkor','sugar'],['jajce','egg'],
+                 ['maslo','butter'],['sol','salt'],['olje','oil'],['cesen','garlic'],['sir','cheese']];
+  pairs.forEach(([sl, en]) => ok(A.wordsMatch(sl, en), sl + ' should match ' + en));
+});
+test('the other five languages reach the English staples too', () => {
+  [['leche','milk'],['lait','milk'],['milch','milk'],['latte','milk'],['leite','milk'],
+   ['harina','flour'],['farine','flour'],['mehl','flour'],['farinha','flour'],
+   ['huevo','egg'],['oeuf','egg'],['uovo','egg'],['ovo','egg'],
+   ['zwiebel','onion'],['cipolla','onion'],['cebolla','onion'],
+   ['knoblauch','garlic'],['aglio','garlic'],['ail','garlic']]
+    .forEach(([w, en]) => ok(A.wordsMatch(w, en), w + ' should match ' + en));
+});
+test('an inflected form reaches a synonym listed under the nominative', () => {
+  // Slovenian ingredient lines are written in the genitive, so this is the case
+  // that actually occurs: "480 g moke", never "moka".
+  A.pantry = [{ id:'p', name:'Flour' }];
+  ok(A.inPantry('480 g moke'), 'moke -> moka -> flour');
+  A.pantry = [{ id:'p', name:'Butter' }];
+  ok(A.inPantry('250 g hladnega masla'), 'masla -> maslo -> butter');
+  A.pantry = [{ id:'p', name:'Salt' }];
+  ok(A.inPantry('1 ščepec soli'), 'soli -> sol -> salt');
+  A.pantry = [{ id:'p', name:'Sugar' }];
+  ok(A.inPantry('200 g sladkorja'), 'sladkorja -> sladkor -> sugar');
+});
+test('fleeting-vowel stems are listed, because no ending rule can bridge them', () => {
+  // česen -> česna and poper -> popra change the root, not just the ending.
+  A.pantry = [{ id:'p', name:'Garlic' }];
+  ok(A.inPantry('2 stroka česna'));
+  A.pantry = [{ id:'p', name:'Pepper' }];
+  ok(A.inPantry('ščepec popra'));
+});
+test('reaching a synonym through an inflection does not loosen the guards', () => {
+  const blocked = [
+    ['Sol',     '200 g solate'],
+    ['Sladkor', '3 žlice sladkorja v prahu'],
+    ['Moka',    '50 g koruzne moke'],
+    ['Mleko',   '400 ml kokosovega mleka'],
+    ['Smetana', '200 g kisle smetane'],
+    ['Olje',    '2 žlici oljčnega olja'],
+  ];
+  blocked.forEach(([have, want]) => {
+    A.pantry = [{ id:'p', name:have }];
+    notOk(A.inPantry(want), have + ' must not cover "' + want + '"');
+  });
+});
+test('a synonym on a base form does not break its inflections', () => {
+  // sol -> salt canonicalises one form only; the stems still have to match.
+  ok(A.wordsMatch('sol','soli'),   'Slovenian sol/soli');
+  ok(A.wordsMatch('maslo','masla'),'Slovenian maslo/masla');
+  ok(A.wordsMatch('mleko','mleka'),'Slovenian mleko/mleka');
+});
+test('cross-language synonyms have not created false matches', () => {
+  notOk(A.wordsMatch('sol','solata'),    'salt must not match salad');
+  notOk(A.wordsMatch('sale','salame'),   'Italian salt must not match salami');
+  notOk(A.wordsMatch('aceite','aceto'),  'Spanish oil must not match Italian vinegar');
+  notOk(A.wordsMatch('mela','meal'),     'Italian apple must not match meal');
+  notOk(A.wordsMatch('med','medium'),    'Slovenian honey must not match "medium"');
+});
+test('known limitation: a 3-letter root plus a single vowel still collides', () => {
+  // Pinned rather than hidden. "pane"/"pan" share a 3-letter root and differ by
+  // one vowel, which the rule must accept because maslo/masla is exactly that
+  // shape. It predates the cross-language synonyms — the stem rule never
+  // consulted SYNONYMS. Fixing it means a real morphology table, not a tweak.
+  ok(A.wordsMatch('pane','pan'), 'if this ever goes false the root rule changed — check maslo/masla still works');
+  ok(A.wordsMatch('maslo','masla'), 'the inflection this collision is the price of');
+});
+test('every synonym key is in the folded form the matcher actually sees', () => {
+  const bad = Object.keys(A.SYNONYMS).filter(k => A.foldText(k) !== k);
+  eq(bad, [], 'these keys carry accents or capitals and can never be looked up');
+});
+test('no synonym key is also a synonym value pointing elsewhere', () => {
+  const conflicts = Object.entries(A.SYNONYMS)
+    .filter(([k, v]) => A.SYNONYMS[v] && A.SYNONYMS[v] !== v)
+    .map(([k, v]) => k + '->' + v + '->' + A.SYNONYMS[v]);
+  eq(conflicts, [], 'a synonym chain would resolve differently depending on the starting word');
+});
+
+group('Matcher — compound phrases across languages');
+test('a Slovenian compound is not satisfied by its head noun', () => {
+  const cases = [
+    ['Mleko',    '400 ml kokosovega mleka'],
+    ['Smetana',  '200 g kisle smetane'],
+    ['Olje',     '2 žlici oljčnega olja'],
+    ['Sladkor',  '1 vrečka vaniljevega sladkorja'],
+    ['Moka',     '50 g koruzne moke'],
+  ];
+  cases.forEach(([have, want]) => {
+    A.pantry = [{ id:'p', name:have }];
+    notOk(A.inPantry(want), have + ' should NOT cover "' + want + '"');
+  });
+});
+test('the same compound still matches itself', () => {
+  A.pantry = [{ id:'p', name:'Kokosovo mleko' }];
+  ok(A.inPantry('400 ml kokosovega mleka'));
+});
+test('compounds are blocked in the other languages too', () => {
+  const cases = [
+    ['Leche',  'leche de coco'],
+    ['Lait',   'lait de coco'],
+    ['Latte',  'latte di cocco'],
+    ['Leite',  'leite de coco'],
+    ['Sahne',  'saure sahne'],
+    ['Huile',  'huile d’olive'],
+    ['Olio',   'olio di oliva'],
+    ['Aceite', 'aceite de oliva'],
+  ];
+  cases.forEach(([have, want]) => {
+    A.pantry = [{ id:'p', name:have }];
+    notOk(A.inPantry(want), have + ' should NOT cover "' + want + '"');
+  });
+});
+test('German closed compounds need no phrase entry to stay separate', () => {
+  // Kokosmilch shares no prefix with Milch, so the root rule already keeps them apart.
+  A.pantry = [{ id:'p', name:'Milch' }];
+  notOk(A.inPantry('200 ml Kokosmilch'));
+  notOk(A.inPantry('200 ml Buttermilch'));
+  A.pantry = [{ id:'p', name:'Öl' }];
+  notOk(A.inPantry('2 EL Olivenöl'));
+});
+test('every phrase in the list survives normalisation as a phrase', () => {
+  // rawWords drops single letters, so a phrase like "huile d’olive" must still
+  // come out with two or more words or it silently does nothing.
+  const dropped = A.PHRASE_SRC.filter(p => A.rawWords(p).length < 2);
+  eq(dropped, [], 'these entries collapse to one word and have no effect');
+});
+test('the derived phrase list is deduplicated', () => {
+  // PHRASE_SRC may legitimately repeat across languages — Spanish and Portuguese
+  // share a lot of compounds — but the list the matcher walks must not.
+  const keys = A.PHRASES.map(p => p.join('_'));
+  eq(keys.length, new Set(keys).size, 'PHRASES contains the same phrase twice');
+  ok(A.PHRASES.length > 200, 'expected a substantial phrase list, got ' + A.PHRASES.length);
+});
+test('phrases are ordered longest first, so the most specific one wins', () => {
+  const lengths = A.PHRASES.map(p => p.length);
+  eq(lengths, lengths.slice().sort((a, b) => b - a));
+});
+
+group('Matcher — pantry (the regression that started this)');
+test('pantry "Eggs" covers "1 egg"', () => {
+  resetFixture();
+  ok(A.inPantry('1 egg'));
+});
+test('pantry "Milk" does NOT cover "300ml buttermilk"', () => {
+  resetFixture();
+  notOk(A.inPantry('300ml buttermilk'), 'buttermilk is not milk');
+});
+test('pantry "Milk" does NOT cover "400ml coconut milk"', () => {
+  resetFixture();
+  notOk(A.inPantry('400ml coconut milk'));
+});
+test('pantry "Olive oil" covers "Olive oil"', () => { resetFixture(); ok(A.inPantry('Olive oil')); });
+test('pantry "Garlic" covers "2 cloves garlic"', () => { resetFixture(); ok(A.inPantry('2 cloves garlic')); });
+test('an empty pantry covers nothing', () => {
+  resetFixture(); A.pantry = [];
+  notOk(A.inPantry('1 egg'));
+});
+
+group('Matcher — recipe search');
+test('finds a meal by name', () => { resetFixture(); ok(A.searchMeal(A.menu[0], 'pancake').hit); });
+test('finds a meal by a partial ingredient and says which', () => {
+  resetFixture();
+  // "tagliatelle" appears only in the ingredients — "mushroom" would match the
+  // recipe's own name first, and a name match needs no explaining.
+  const r = A.searchMeal(A.menu[1], 'tagliat');
+  ok(r.hit); ok(/tagliatelle/i.test(r.ing), 'expected the matching ingredient back, got ' + r.ing);
+});
+test('a name match reports no ingredient, because it needs no explaining', () => {
+  resetFixture();
+  const r = A.searchMeal(A.menu[1], 'mushroom');       // also the recipe's name
+  ok(r.hit); eq(r.ing, undefined);
+});
+test('finds a meal through a synonym', () => {
+  resetFixture();
+  ok(A.searchMeal(A.menu[2], 'garbanzo').hit, 'garbanzo should find chickpeas');
+});
+test('an empty query matches everything', () => { resetFixture(); ok(A.searchMeal(A.menu[0], '').hit); });
+test('does not search the steps', () => {
+  resetFixture();
+  notOk(A.searchMeal(A.menu[0], 'whisk').hit, 'steps are prose and are deliberately not searched');
+});
+
+/* ============================================================
+   UNIT — dates
+   ============================================================ */
+group('Dates');
+test('dateKey and parseKey round-trip', () => {
+  eq(A.dateKey(A.parseKey('2026-07-04')), '2026-07-04');
+});
+test('shiftKey crosses a month boundary', () => eq(A.shiftKey('2026-07-31', 1), '2026-08-01'));
+test('shiftKey crosses a year boundary', () => eq(A.shiftKey('2026-12-31', 1), '2027-01-01'));
+test('shiftKey handles a leap day', () => eq(A.shiftKey('2028-02-28', 1), '2028-02-29'));
+test('shiftKey survives a spring-forward DST day', () => {
+  // Local midnight + 1 day must still be the next calendar day, not 23:00 the same day.
+  eq(A.shiftKey('2026-03-29', 1), '2026-03-30');
+  eq(A.shiftKey('2026-10-25', 1), '2026-10-26');
+});
+test('cookedAgo says today / yesterday / N days', () => {
+  const today = A.todayKey();
+  eq(A.cookedAgo(today), A.t('when_today'));
+  eq(A.cookedAgo(A.shiftKey(today, -1)), A.t('when_yesterday'));
+  eq(A.cookedAgo(A.shiftKey(today, -5)), A.t('when_days', {n:5}));
+});
+test('cookedAgo falls back to a real date past a month', () => {
+  const old = A.cookedAgo(A.shiftKey(A.todayKey(), -60));
+  notOk(/ago/.test(old), 'expected a date, got ' + old);
+});
+test('a plan range of a week is 7 days, Monday first', () => {
+  const days = A.planRangeKeys('w0');
+  eq(days.length, 7);
+  eq(A.parseKey(days[0]).getDay(), 1, 'the range must start on a Monday');
+});
+test('the 7-day rolling window starts today', () => {
+  const days = A.planRangeKeys('d7');
+  eq(days.length, 7); eq(days[0], A.todayKey());
+});
+test('a calendar month range covers exactly that month', () => {
+  const days = A.planRangeKeys('m0');
+  const now = new Date();
+  eq(days.length, new Date(now.getFullYear(), now.getMonth()+1, 0).getDate());
+});
+test('a reversed custom range is tolerated, not rejected', () => {
+  A.document.getElementById('shopFrom').value = '2026-07-10';
+  A.document.getElementById('shopTo').value   = '2026-07-06';
+  eq(A.planRangeKeys('custom').length, 5);
+});
+
+/* ============================================================
+   UNIT — batches
+   ============================================================ */
+group('Batches — model');
+test('creating a batch links every day back to it', () => {
+  resetFixture();
+  const id = A.createBatch('t_curry', K(6), 'dinner', [{date:K(7),slot:'dinner'},{date:K(8),slot:'dinner'}]);
+  eq(A.batchEntries(id).length, 3);
+  eq(A.batchById(id).portions, 3);
+  eq(A.batchById(id).cookDate, K(6));
+});
+test('the cook day is not a leftover; later days are', () => {
+  resetFixture();
+  const id = A.createBatch('t_curry', K(6), 'dinner', [{date:K(7),slot:'dinner'}]);
+  notOk(A.isLeftover(A.schedule[K(6)][0], K(6)));
+  ok(A.isLeftover(A.schedule[K(7)][0], K(7)));
+});
+test('exactly one cook day survives dragging the cook day past its leftovers', () => {
+  resetFixture();
+  const id = A.createBatch('t_curry', K(6), 'dinner', [{date:K(7),slot:'dinner'},{date:K(8),slot:'dinner'}]);
+  A.moveScheduled(K(6), 0, K(20));                       // cook day jumps to the end
+  const fresh = A.batchEntries(id).filter(e => !A.isLeftover(e.s, e.key));
+  eq(fresh.length, 1, 'there must always be exactly one cook day');
+  eq(A.batchById(id).cookDate, K(7), 'the earliest day becomes the cook day');
+});
+test('deleting the cook day promotes the next one', () => {
+  resetFixture();
+  const id = A.createBatch('t_curry', K(6), 'dinner', [{date:K(7),slot:'dinner'}]);
+  delete A.schedule[K(6)];
+  A.normaliseBatchDates();
+  eq(A.batchById(id).cookDate, K(7));
+  notOk(A.isLeftover(A.schedule[K(7)][0], K(7)), 'the promoted day must not still read as a leftover');
+});
+test('a batch record is pruned once its last day is gone', () => {
+  resetFixture();
+  const id = A.createBatch('t_curry', K(6), 'dinner', [{date:K(7),slot:'dinner'}]);
+  delete A.schedule[K(6)];
+  A.pruneBatches(); eq(A.batches.length, 1, 'one day still remains');
+  delete A.schedule[K(7)];
+  A.pruneBatches(); eq(A.batches.length, 0);
+});
+test('portions record what the batch makes, not what is still scheduled', () => {
+  resetFixture();
+  const id = A.createBatch('t_curry', K(6), 'dinner', [{date:K(7),slot:'dinner'},{date:K(8),slot:'dinner'}]);
+  delete A.schedule[K(8)]; A.pruneBatches(); A.normaliseBatchDates();
+  eq(A.batchById(id).portions, 3, 'a spare portion is meaningful, not drift');
+  eq(A.batchEntries(id).length, 2);
+});
+test('removeBatch clears every day and the record', () => {
+  resetFixture();
+  const id = A.createBatch('t_curry', K(6), 'dinner', [{date:K(7),slot:'dinner'}]);
+  A.removeBatch(id);
+  eq(A.batches.length, 0);
+  eq(Object.keys(A.schedule).length, 0, 'no empty arrays may be left behind');
+});
+test('an orphan batchId degrades to a plain scheduled meal', () => {
+  resetFixture();
+  A.schedule[K(6)] = [{ mealId:'t_curry', slot:'dinner', batchId:'b_gone' }];
+  A.pruneBatches(); A.normaliseBatchDates();
+  notOk(A.isLeftover(A.schedule[K(6)][0], K(6)));
+  A.renderCalendar();
+  eq($$(`.day[data-date="${K(6)}"] .meal-chip`).length, 1, 'it must still render');
+});
+
+/* ============================================================
+   UNIT — data shape & back-compat
+   ============================================================ */
+group('Data shape');
+test('mealImages reads the old single `image` field', () => {
+  eq(A.mealImages({ image:'a.jpg' }), ['a.jpg']);
+  eq(A.mealImages({ images:['b.jpg','c.jpg'] }), ['b.jpg','c.jpg']);
+  eq(A.mealImages({}), []);
+});
+test('normaliseMeal brings an old meal up to the current shape', () => {
+  const m = A.normaliseMeal({ id:'x', name:'Old', image:'a.jpg' });
+  eq(m.images, ['a.jpg']); eq(m.image, 'a.jpg'); eq(m.sourceUrl, ''); eq(m.nutrition, null);
+});
+test('normaliseMeal does not mutate its input', () => {
+  const src = { id:'x', name:'Old', image:'a.jpg' };
+  A.normaliseMeal(src);
+  eq(Object.keys(src).sort(), ['id','image','name']);
+});
+test('the export payload carries every store and the schema version', () => {
+  resetFixture();
+  const keys = Object.keys({ app:1, version:1, exportedAt:1, menu:1, schedule:1, pantry:1, shopping:1, batches:1 });
+  const built = { app:'kitchen-menu', version:A.SCHEMA_VERSION, exportedAt:'', menu:A.menu,
+                  schedule:A.schedule, pantry:A.pantry, shopping:A.shopping, batches:A.batches };
+  eq(Object.keys(built).sort(), keys.sort());
+  eq(A.SCHEMA_VERSION, 4);
+});
+test('esc neutralises every HTML metacharacter', () => {
+  eq(A.esc('<img src=x onerror=alert(1)>'), '&lt;img src=x onerror=alert(1)&gt;');
+  eq(A.esc(`"'&<>`), '&quot;&#39;&amp;&lt;&gt;');
+  eq(A.esc(null), '');
+});
+
+/* ============================================================
+   UNIT — QR code
+   ------------------------------------------------------------
+   The encoder is ours (js/qr.js), so "it renders something square" is not
+   evidence. Two things are checked that self-consistency cannot fake:
+
+     - the capacity and alignment tables published in ISO/IEC 18004, which the
+       code derives rather than stores, so a slip in the derivation shows up as
+       a number that does not match the standard;
+     - a decoder, below, that reads a finished grid back the way a scanner
+       does. It rebuilds the function-module map from the version number alone,
+       verifies the format info against its BCH code and that both copies of it
+       agree, un-masks, de-interleaves, and checks every block's Reed-Solomon
+       syndromes are zero before it will hand back a string.
+
+   It shares the encoder's GF(256) arithmetic — that is just field maths — but
+   none of its layout, bit-packing or masking decisions.
+   ============================================================ */
+group('QR code');
+
+function qrDecode(qr){
+  const size = qr.size, ver = qr.version, m = qr.modules;
+  const fn = Array.from({length:size}, () => new Array(size).fill(false));
+  const mark = (x, y) => { if(x>=0 && x<size && y>=0 && y<size) fn[y][x] = true; };
+  [[3,3],[size-4,3],[3,size-4]].forEach(([cx,cy]) => {
+    for(let dy=-4;dy<=4;dy++) for(let dx=-4;dx<=4;dx++) mark(cx+dx, cy+dy);
+  });
+  for(let i=0;i<size;i++){ mark(6,i); mark(i,6); }
+  const ap = A.qrAlignPositions(ver), last = ap.length - 1;
+  ap.forEach((y,i) => ap.forEach((x,j) => {
+    if((i===0&&j===0) || (i===0&&j===last) || (i===last&&j===0)) return;
+    for(let dy=-2;dy<=2;dy++) for(let dx=-2;dx<=2;dx++) mark(x+dx, y+dy);
+  }));
+  for(let i=0;i<=8;i++){ mark(8,i); mark(i,8); }
+  for(let i=0;i<8;i++){ mark(size-1-i, 8); mark(8, size-1-i); }
+  if(ver >= 7) for(let i=0;i<18;i++){ mark(size-11+i%3, Math.floor(i/3)); mark(Math.floor(i/3), size-11+i%3); }
+
+  // Format info: read it, undo the 0x5412 mask, check its BCH(15,5) remainder.
+  const raw = [];
+  for(let i=0;i<=5;i++) raw.push(m[i][8]);
+  raw.push(m[7][8], m[8][8], m[8][7]);
+  for(let i=9;i<15;i++) raw.push(m[8][14-i]);
+  let fmt = 0; raw.forEach((b,i) => fmt |= b << i);
+  fmt ^= 0x5412;
+  let rem = fmt;
+  for(let i=14;i>=10;i--) if((rem >>> i) & 1) rem ^= 0x537 << (i-10);
+  eq(rem, 0, 'the format info fails its BCH check — a reader would give up here');
+  eq((fmt >>> 13) & 3, 0, 'the format info should declare error-correction level M');
+  const mask = (fmt >>> 10) & 7;
+  const copy2 = [];
+  for(let i=0;i<8;i++) copy2.push(m[8][size-1-i]);
+  for(let i=8;i<15;i++) copy2.push(m[size-15+i][8]);
+  let f2 = 0; copy2.forEach((b,i) => f2 |= b << i);
+  eq(f2 ^ 0x5412, fmt, 'the two format-info copies disagree — a damaged corner would cost the mask');
+
+  // Un-mask, then walk the zig-zag and read the codewords back.
+  const un = m.map(r => r.slice());
+  for(let y=0;y<size;y++) for(let x=0;x<size;x++) if(!fn[y][x] && A.QR_MASKS[mask](y,x)) un[y][x] ^= 1;
+  const bits = [];
+  for(let right = size-1; right >= 1; right -= 2){
+    if(right === 6) right = 5;
+    for(let v=0;v<size;v++) for(let j=0;j<2;j++){
+      const x = right - j, y = ((right+1) & 2) === 0 ? size-1-v : v;
+      if(!fn[y][x]) bits.push(un[y][x]);
+    }
+  }
+  const all = [];
+  for(let i=0;i+8<=bits.length;i+=8){ let v=0; for(let j=0;j<8;j++) v = (v<<1) | bits[i+j]; all.push(v); }
+  eq(all.length, A.qrTotalCodewords(ver), 'read back the wrong number of codewords');
+
+  // De-interleave, then insist every block is intact on its own.
+  const nb = A.QR_BLOCKS[ver], eccLen = A.QR_ECC_PER_BLOCK[ver], dataLen = A.qrDataCapacity(ver);
+  const shortLen = Math.floor(dataLen/nb), numShort = nb - (dataLen % nb);
+  const blocks = Array.from({length:nb}, (_, i) => ({ d:[], e:[], len: shortLen + (i < numShort ? 0 : 1) }));
+  let p = 0;
+  for(let i=0;i<=shortLen;i++) blocks.forEach(b => { if(i < b.len) b.d.push(all[p++]); });
+  for(let i=0;i<eccLen;i++) blocks.forEach(b => b.e.push(all[p++]));
+  eq(p, all.length, 'de-interleaving did not consume every codeword');
+  blocks.forEach((b, bi) => {
+    for(let j=0;j<eccLen;j++){
+      let s = 0;
+      for(const c of b.d.concat(b.e)) s = A.qrMul(s, A.QR_EXP[j]) ^ c;
+      eq(s, 0, 'block ' + bi + ' has a non-zero Reed-Solomon syndrome — this code would not decode');
+    }
+  });
+
+  const db = [];
+  [].concat(...blocks.map(b => b.d)).forEach(c => { for(let i=7;i>=0;i--) db.push((c >>> i) & 1); });
+  const take = n => { let v = 0; for(let i=0;i<n;i++) v = (v << 1) | db.shift(); return v; };
+  eq(take(4), 0b0100, 'the mode indicator should say byte mode');
+  const len = take(ver < 10 ? 8 : 16), out = [];
+  for(let i=0;i<len;i++) out.push(take(8));
+  return new TextDecoder().decode(Uint8Array.from(out));
+}
+
+test('capacities match the published byte-mode table for level M', () => {
+  // ISO/IEC 18004, versions 1-20. These are derived from the module count, not
+  // stored, so they either match the standard or the derivation is wrong.
+  eq(Array.from({length:20}, (_, i) => A.qrCapacityBytes(i+1)),
+     [14,26,42,62,84,106,122,152,180,213,251,287,331,362,412,450,504,560,624,666]);
+});
+test('total codewords per version match the published table', () => {
+  eq(Array.from({length:20}, (_, i) => A.qrTotalCodewords(i+1)),
+     [26,44,70,100,134,172,196,242,292,346,404,466,532,581,655,733,815,901,991,1085]);
+});
+test('alignment-pattern centres match the published table', () => {
+  eq(A.qrAlignPositions(1), [], 'version 1 has none');
+  eq(A.qrAlignPositions(7), [6,22,38]);
+  eq(A.qrAlignPositions(10), [6,28,50]);
+  eq(A.qrAlignPositions(15), [6,26,48,70]);
+  eq(A.qrAlignPositions(20), [6,34,62,90]);
+});
+test('the smallest version that fits is the one chosen', () => {
+  eq(A.qrEncode('A'.repeat(14)).version, 1);
+  eq(A.qrEncode('A'.repeat(15)).version, 2, 'one byte over version 1 has to step up');
+  eq(A.qrEncode('B'.repeat(180)).version, 9);
+  eq(A.qrEncode('B'.repeat(181)).version, 10, 'the character-count field widens from here');
+});
+test('a payload past the ceiling is refused rather than truncated', () => {
+  ok(A.qrEncode('D'.repeat(666)), '666 bytes is exactly version 20');
+  eq(A.qrEncode('D'.repeat(667)), null, 'dropping the tail would scan as a plausible wrong list');
+});
+test('256 bytes does not wrap the 8-bit character count', () => {
+  // Below version 10 the count field is 8 bits, so 256 cannot be counted there
+  // however much room the version has — unguarded it wraps to zero and the code
+  // scans as empty, which is the worst kind of wrong.
+  const text = 'C'.repeat(256);
+  eq(qrDecode(A.qrEncode(text)), text);
+});
+test('the patterns a scanner looks for are where they should be', () => {
+  const q = A.qrEncode('structure'), m = q.modules, s = q.size;
+  eq([m[3][3], m[3][s-4], m[s-4][3]], [1,1,1], 'the three finder centres are dark');
+  eq([m[3][5], m[5][3]], [0,0], 'the light ring inside each finder');
+  eq(m[7][3], 0, 'the separator between finder and data stays light');
+  eq(Array.from({length:s-16}, (_, i) => m[6][8+i]), Array.from({length:s-16}, (_, i) => i%2===0 ? 1 : 0),
+     'the horizontal timing pattern alternates, starting dark');
+  eq(Array.from({length:s-16}, (_, i) => m[8+i][6]), Array.from({length:s-16}, (_, i) => i%2===0 ? 1 : 0),
+     'the vertical timing pattern alternates, starting dark');
+  eq(m[s-8][8], 1, 'the module that is always dark');
+});
+test('a finished grid decodes back to the text it was made from', () => {
+  [ 'Milk',
+    '- 500 g flour',
+    'MealMap — Nakupovalni seznam\n- 3 pločevinke breskev\n- 480 g moke\n- 1 žlička soli',
+    '🛒 list ✓ done — 2 × eggs',
+    'A'.repeat(14), 'A'.repeat(15), 'B'.repeat(180), 'B'.repeat(181), 'D'.repeat(666)
+  ].forEach(text => eq(qrDecode(A.qrEncode(text)), text, 'round-trip failed for a ' + text.length + '-char payload'));
+});
+test('every version builds, fills exactly, and decodes', () => {
+  for(let v=1; v<=20; v++){
+    const head = 'v' + v + ':';
+    const payload = head + 'x'.repeat(A.qrCapacityBytes(v) - head.length);   // fills the version to the byte
+    const qr = A.qrEncode(payload);
+    ok(qr, 'version ' + v + ' did not encode');
+    eq(qr.version, v, 'a full version-' + v + ' payload should pick version ' + v);
+    eq(qrDecode(qr), payload, 'version ' + v + ' did not survive the round trip');
+  }
+});
+test('the SVG keeps its quiet zone and its contrast', () => {
+  const q = A.qrEncode('quiet zone'), svg = A.qrSvg(q, 'label');
+  eq(/viewBox="0 0 (\d+) \1"/.exec(svg)[1], String(q.size + 8), 'four light modules on every side, or a scanner may never find it');
+  eq((svg.match(/<path/g) || []).length, 1, 'one path, not a rect per module — thousands of elements are slow and show seams');
+  eq((svg.match(/h1v1h-1z/g) || []).length, q.modules.flat().filter(Boolean).length, 'every dark module is drawn');
+  ok(/fill="#fff"/.test(svg) && /fill="#000"/.test(svg), 'black on white');
+  notOk(/currentColor|var\(/.test(svg), 'never themed — the contrast is what makes it readable');
+});
+test('the label is escaped into the SVG', () => {
+  notOk(/<img/.test(A.qrSvg(A.qrEncode('x'), '<img src=x onerror=alert(1)>')), 'aria-label goes through esc()');
+});
+
+/* ============================================================
+   UNIT — reading a spreadsheet back in
+   ------------------------------------------------------------
+   excelRowsToPayload() is the whole of the import that is worth testing on its
+   own: sheets of plain rows in, an applyPayload()-shaped object out. The rows
+   below are written exactly as exportExcel() writes them, so a change to either
+   side that breaks the round trip shows up here.
+   ============================================================ */
+group('Excel import');
+const XLMEAL = {
+  Name:'Mushroom Pasta', Category:'Main', Emoji:'🍝', 'Prep (min)':30, Servings:2,
+  Description:'Creamy and quick.',
+  Ingredients:'250g tagliatelle | 300g mushrooms | 2 cloves garlic',
+  Steps:'Boil the pasta. | Sear the mushrooms. | Combine.',
+  Image:'https://example.com/pasta.jpg', 'More photos':'https://example.com/2.jpg',
+  Source:'https://example.com/recipe', Calories:520, Protein:18, Carbs:70, Fat:16
+};
+test('a meal row comes back with its lists, photos and nutrition', () => {
+  const { payload } = A.excelRowsToPayload({ meals:[XLMEAL] });
+  eq(payload.menu.length, 1);
+  const m = payload.menu[0];
+  eq(m.name, 'Mushroom Pasta'); eq(m.category, 'Main'); eq(m.emoji, '🍝');
+  eq(m.time, 30); eq(m.servings, 2); eq(m.desc, 'Creamy and quick.');
+  eq(m.ingredients, ['250g tagliatelle','300g mushrooms','2 cloves garlic']);
+  eq(m.steps, ['Boil the pasta.','Sear the mushrooms.','Combine.']);
+  eq(m.images, ['https://example.com/pasta.jpg','https://example.com/2.jpg']);
+  eq(m.image, 'https://example.com/pasta.jpg');
+  eq(m.sourceUrl, 'https://example.com/recipe');
+  eq(m.nutrition, { calories:520, protein:18, carbs:70, fat:16 });
+  ok(m.id, 'a sheet carries no ids, so the import has to mint them');
+});
+test('the "(uploaded photo)" marker never comes back as an image', () => {
+  const { payload } = A.excelRowsToPayload({
+    meals:[{ Name:'Soup', Image:'(uploaded photo)', 'More photos':'(uploaded photo) | https://example.com/ok.jpg' }]
+  });
+  eq(payload.menu[0].images, ['https://example.com/ok.jpg']);
+  eq(payload.menu[0].image, 'https://example.com/ok.jpg');
+});
+test('a meal with nothing filled in keeps empty fields, not junk', () => {
+  const { payload } = A.excelRowsToPayload({ meals:[{ Name:'Toast' }] });
+  const m = payload.menu[0];
+  eq([m.time, m.servings, m.desc, m.category], ['', '', '', '']);
+  eq([m.ingredients, m.steps, m.images], [[], [], []]);
+  eq(m.nutrition, null, 'an empty nutrition block should not become zeroes');
+});
+test('blank rows and unnamed rows are skipped', () => {
+  // json_to_sheet writes a single empty row when there is nothing to export
+  const { payload } = A.excelRowsToPayload({ meals:[{}, { Name:'  ' }, { Name:'Real' }] });
+  eq(payload.menu.map(m => m.name), ['Real']);
+});
+test('headings match whatever case and wording the sheet used', () => {
+  const { payload } = A.excelRowsToPayload({
+    meals:[{ NAME:'Chilli', desc:'Hot.', time:45, PHOTO:'https://example.com/c.jpg' }]
+  });
+  const m = payload.menu[0];
+  eq(m.name, 'Chilli'); eq(m.desc, 'Hot.'); eq(m.time, 45);
+  eq(m.images, ['https://example.com/c.jpg']);
+});
+test('plan rows are linked to the meals by name', () => {
+  const { payload, skipped } = A.excelRowsToPayload({
+    meals:[XLMEAL, { Name:'Chickpea Curry' }],
+    schedule:[
+      { Date:'2026-07-09', Slot:'Dinner', Meal:'Mushroom Pasta' },
+      { Date:'2026-07-09', Slot:'Lunch',  Meal:'chickpea curry' }   // case is not a mismatch
+    ]
+  });
+  eq(skipped, 0);
+  const day = payload.schedule['2026-07-09'];
+  eq(day.length, 2);
+  eq(day[0].slot, 'dinner'); eq(day[1].slot, 'lunch');
+  eq(day[0].mealId, payload.menu[0].id);
+  eq(day[1].mealId, payload.menu[1].id);
+});
+test('a plan row naming a meal the sheet does not have is dropped and counted', () => {
+  const { payload, skipped } = A.excelRowsToPayload({
+    meals:[{ Name:'Soup' }],
+    schedule:[{ Date:'2026-07-09', Slot:'Dinner', Meal:'Something else' },
+              { Date:'',           Slot:'Dinner', Meal:'Soup' }]
+  });
+  eq(skipped, 2, 'a nameless meal and a dateless row both have nowhere to go');
+  eq(payload.schedule, {}, 'better no entry than one pointing at nothing');
+});
+test('slot labels are read in every language the app writes them in', () => {
+  eq(A.slotFromLabel('Breakfast'), 'breakfast');
+  eq(A.slotFromLabel('dinner'), 'dinner');
+  eq(A.slotFromLabel('Večerja'), 'dinner',  'a file exported in Slovenian');
+  eq(A.slotFromLabel('Abendessen'), 'dinner', '…or in German');
+  eq(A.slotFromLabel('Comida'), 'lunch',   '…or in Spanish');
+  eq(A.slotFromLabel('Almoço'), 'lunch',   '…or in Portuguese');
+  eq(A.slotFromLabel('  SNACK  '), 'snack');
+  eq(A.slotFromLabel('whatever'), 'dinner', 'an unreadable slot still belongs on the day');
+  eq(A.slotFromLabel(''), 'dinner');
+});
+test('dates arrive as text, as a real date cell, or as a serial number', () => {
+  eq(A.xlDateKey('2026-07-09'), '2026-07-09');
+  eq(A.xlDateKey('2026-7-9'), '2026-07-09', 'Excel drops the padding');
+  eq(A.xlDateKey(new Date(2026, 6, 9)), '2026-07-09');
+  eq(A.xlDateKey(''), '');
+  eq(A.xlDateKey('not a date'), '');
+  eq(A.xlDateKey('2026'), '2026-01-01', 'a bare year is not a 1905 serial number');
+});
+test('numbers survive a decimal comma without losing a thousands one', () => {
+  eq(A.xlNum('12,5'), 12.5,  'a European decimal comma');
+  eq(A.xlNum('1,200'), 1200, 'and not 1.2 — that would divide a calorie count by a thousand');
+  eq(A.xlNum(30), 30);
+  eq(A.xlNum(''), ''); eq(A.xlNum('about 20'), '');
+  const { payload } = A.excelRowsToPayload({ meals:[{ Name:'Stew', Calories:'1,200', 'Prep (min)':'12,5' }] });
+  eq(payload.menu[0].nutrition, { calories:1200 });
+  eq(payload.menu[0].time, 12.5);
+});
+test('the pantry and shopping sheets come back with their flags', () => {
+  const { payload } = A.excelRowsToPayload({
+    meals:[{ Name:'Soup' }],
+    pantry:[{ Name:'Olive oil', Quantity:'500 ml', Category:'Oils', 'Running low':'' },
+            { Name:'Milk', Quantity:'1 L', Category:'Dairy', 'Running low':'yes' },
+            { Name:'' }],
+    shopping:[{ Item:'Butter', Bought:'' }, { Item:'Eggs', Bought:'yes' }]
+  });
+  eq(payload.pantry.map(p => [p.name, p.qty, p.category, p.low]),
+     [['Olive oil','500 ml','Oils',false], ['Milk','1 L','Dairy',true]]);
+  eq(payload.shopping.map(s => [s.name, s.done]), [['Butter',false], ['Eggs',true]]);
+});
+test('what exportExcel writes is what the import reads', () => {
+  resetFixture();
+  A.addScheduledEntry(K(9), { mealId:'t_curry', slot:'lunch' });
+  // the rows exportExcel() builds, without going near a file
+  const meals = A.menu.map(m => ({
+    Name:m.name, Category:m.category||'', Emoji:m.emoji||'',
+    'Prep (min)':m.time||'', Servings:m.servings||'', Description:m.desc||'',
+    Ingredients:(m.ingredients||[]).join(' | '), Steps:(m.steps||[]).join(' | ')
+  }));
+  const schedule = [{ Date:K(9), Slot:A.slotLabel('lunch'), Meal:'Chickpea Curry' }];
+  const { payload, skipped } = A.excelRowsToPayload({ meals, schedule });
+  eq(skipped, 0);
+  eq(payload.menu.map(m => m.name), A.menu.map(m => m.name));
+  eq(payload.menu[2].ingredients, A.menu[2].ingredients, 'the " | " joining survives the round trip');
+  eq(payload.schedule[K(9)][0].slot, 'lunch');
+  eq(payload.version, A.SCHEMA_VERSION);
+  eq(payload.batches, [], 'a spreadsheet cannot carry batch links');
+});
+/* The rest of the path — a real .xlsx, the sheet lookup, the confirm, the apply.
+   The library is the one in lib/, loaded the same way the app loads it. */
+async function xlsxLib(){
+  return await new Promise((res, rej) =>
+    A.loadScript('lib/xlsx.full.min.js', () => res(A.XLSX), () => rej(new Error('xlsx did not load'))));
+}
+function xlsxFile(XLSX, sheets){
+  const wb = XLSX.utils.book_new();
+  Object.entries(sheets).forEach(([name, rows]) =>
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), name));
+  return new A.File([XLSX.write(wb, { bookType:'xlsx', type:'array' })], 'book.xlsx',
+                    { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+}
+test('a real workbook imports through the Settings button', async () => {
+  resetFixture();
+  const XLSX = await xlsxLib();
+  const file = xlsxFile(XLSX, {
+    Meals:[XLMEAL],
+    Schedule:[{ Date:K(9), Slot:'Dinner', Meal:'Mushroom Pasta' }],
+    Pantry:[{ Name:'Milk', Quantity:'1 L', 'Running low':'yes' }],
+    Shopping:[{ Item:'Eggs', Bought:'yes' }]
+  });
+  A.importExcel(file);
+  await answerConfirm(true);
+  eq(A.menu.map(m => m.name), ['Mushroom Pasta'], 'import replaces, as the confirm said it would');
+  eq(A.pantry.map(p => [p.name, p.low]), [['Milk', true]]);
+  eq(A.shopping.map(s => [s.name, s.done]), [['Eggs', true]]);
+  eq(A.schedule[K(9)].length, 1);
+  eq(A.byId(A.schedule[K(9)][0].mealId).name, 'Mushroom Pasta');
+  notOk($('#dataOverlay').classList.contains('open'), 'the panel closes on the way out');
+  resetFixture();
+});
+test('declining the confirm leaves everything alone', async () => {
+  resetFixture();
+  const XLSX = await xlsxLib();
+  A.importExcel(xlsxFile(XLSX, { Meals:[XLMEAL] }));
+  await answerConfirm(false);
+  eq(A.menu.length, 4, 'the fixture menu must still be there');
+  resetFixture();
+});
+test('a workbook with no meals in it is refused by name', async () => {
+  resetFixture();
+  const XLSX = await xlsxLib();
+  const said = await withAlerts(async log => {
+    A.importExcel(xlsxFile(XLSX, { Pantry:[{ Name:'Milk' }] }));
+    for(let i = 0; i < 80 && !log.length; i++) await wait(10);   // the FileReader, then the refusal
+  });
+  eq(said, [A.t('import_excel_bad')]);
+  eq(A.menu.length, 4, 'and nothing was replaced');
+  notOk($('#confirmOverlay.open'), 'it never got as far as asking');
+});
+test('a single-sheet CSV-style workbook is taken as the meals', async () => {
+  resetFixture();
+  const XLSX = await xlsxLib();
+  A.importExcel(xlsxFile(XLSX, { Sheet1:[{ Name:'Ramen', Description:'From a plain export.' }] }));
+  await answerConfirm(true);
+  eq(A.menu.map(m => m.name), ['Ramen']);
+  eq(A.menu[0].desc, 'From a plain export.');
+  resetFixture();
+});
+test('an Excel payload is one applyPayload() can take', () => {
+  resetFixture();
+  const { payload } = A.excelRowsToPayload({
+    meals:[XLMEAL], schedule:[{ Date:K(9), Slot:'Dinner', Meal:'Mushroom Pasta' }],
+    pantry:[{ Name:'Milk', 'Running low':'yes' }], shopping:[{ Item:'Eggs' }]
+  });
+  ok(A.applyPayload(payload));
+  eq(A.menu.map(m => m.name), ['Mushroom Pasta']);
+  eq(A.pantry.map(p => p.name), ['Milk']);
+  eq(A.shopping.map(s => s.name), ['Eggs']);
+  eq(A.schedule[K(9)].length, 1);
+  eq(A.byId(A.schedule[K(9)][0].mealId).name, 'Mushroom Pasta', 'the plan points at a meal that exists');
+  A.renderCalendar();
+  eq(dayCell(9).querySelectorAll('.meal-chip').length, 1);
+  resetFixture();
+});
+
+/* ============================================================
+   UNIT — i18n
+   ============================================================ */
+group('Translations');
+test('all seven languages carry exactly the same keys', () => {
+  const langs = Object.keys(A.I18N), base = Object.keys(A.I18N.en).sort();
+  langs.forEach(l => eq(Object.keys(A.I18N[l]).sort(), base, l + ' differs from en'));
+});
+test('no translation is blank', () => {
+  Object.entries(A.I18N).forEach(([l, d]) => {
+    const empty = Object.keys(d).filter(k => !String(d[k] ?? '').trim());
+    eq(empty, [], l + ' has empty strings');
+  });
+});
+test('every data-i18n key used in the markup exists', () => {
+  const used = new Set();
+  $$('[data-i18n],[data-i18n-ph],[data-i18n-title]').forEach(el => {
+    ['i18n','i18nPh','i18nTitle'].forEach(a => { if(el.dataset[a]) used.add(el.dataset[a]); });
+  });
+  eq([...used].filter(k => !(k in A.I18N.en)), [], 'unknown keys in the markup');
+});
+test('placeholders interpolate in every language', () => {
+  // Derive the parameter names from each string rather than hard-coding a list,
+  // so a new key with a new placeholder is covered the day it is added.
+  const paramsOf = s => Object.fromEntries([...s.matchAll(/\{(\w+)\}/g)].map(m => [m[1], 'X']));
+  const parameterised = Object.keys(A.I18N.en).filter(k => /\{\w+\}/.test(A.I18N.en[k]));
+  ok(parameterised.length > 5, 'expected several parameterised strings');
+  const before = A.lang;
+  try{
+    Object.keys(A.I18N).forEach(l => {
+      A.setLang(l);
+      parameterised.forEach(k => {
+        const out = A.t(k, paramsOf(A.I18N[l][k]));
+        notOk(/\{\w+\}/.test(out), l + '.' + k + ' left a placeholder unfilled: ' + out);
+      });
+    });
+  } finally { A.setLang(before); }
+});
+test('a translation never introduces a placeholder English does not have', () => {
+  const namesIn = s => [...String(s).matchAll(/\{(\w+)\}/g)].map(m => m[1]).sort();
+  Object.entries(A.I18N).forEach(([l, dict]) => {
+    Object.keys(A.I18N.en).forEach(k => {
+      eq(namesIn(dict[k]), namesIn(A.I18N.en[k]),
+         l + '.' + k + ' has different placeholders from English — it would render literally');
+    });
+  });
+});
+test('switching language repaints the interface', () => {
+  resetFixture();
+  const en = $('#menuView h2').textContent;
+  A.setLang('de');
+  const de = $('#menuView h2').textContent;
+  A.setLang('en');
+  notOk(en === de, 'the heading did not change with the language');
+  eq($('#menuView h2').textContent, en, 'switching back must restore it');
+});
+
+/* ============================================================
+   E2E — menu CRUD
+   ============================================================ */
+group('E2E — the menu');
+test('the grid renders one card per meal', () => {
+  resetFixture();
+  eq($$('#menuGrid .card').length, 4);
+});
+test('adding a meal through the form puts it in the grid', () => {
+  resetFixture();
+  A.openItemForm();
+  $('#f_name').value = 'Test Soup';
+  $('#f_ingredients').value = '1 onion\n500ml stock';
+  $('#f_steps').value = 'Simmer.';
+  $('#saveItemBtn').click();
+  eq(A.menu.length, 5);
+  const added = A.menu.find(m => m.name === 'Test Soup');
+  eq(added.ingredients, ['1 onion','500ml stock']);
+  ok($$('#menuGrid .card h3').some(h => h.textContent === 'Test Soup'));
+});
+test('a meal with no name is refused', () => {
+  resetFixture();
+  const before = A.menu.length;
+  A.openItemForm();
+  $('#f_name').value = '   ';
+  $('#saveItemBtn').click();
+  eq(A.menu.length, before, 'a nameless meal must not be saved');
+  A.close(A.itemOverlay);
+});
+test('editing a meal keeps its id and updates the card', () => {
+  resetFixture();
+  A.openItemForm('t_pasta');
+  $('#f_name').value = 'Renamed Pasta';
+  $('#saveItemBtn').click();
+  eq(A.byId('t_pasta').name, 'Renamed Pasta');
+  eq(A.menu.length, 4, 'editing must not add a meal');
+});
+/* A meal can vanish under an open form: another tab, or the OneDrive poll
+   replacing `menu` wholesale every 20 seconds. This used to throw on
+   Object.assign(undefined, …) and lose everything typed. */
+test('saving a meal that vanished under the form does not throw', () => {
+  resetFixture();
+  A.openItemForm('t_pasta');
+  $('#f_name').value = 'Edited While Deleted';
+  A.menu = A.menu.filter(m => m.id !== 't_pasta');        // deleted elsewhere
+  $('#saveItemBtn').click();                              // must not throw
+  eq(A.menu.length, 4, 'the meal should be back');
+  eq(A.byId('t_pasta').name, 'Edited While Deleted', 'the edit must not be lost');
+  notOk($('#itemOverlay.open'), 'the form should still close normally');
+});
+test('the re-added meal keeps its id, repairing days that pointed at it', () => {
+  resetFixture();
+  A.addScheduledEntry(K(9), { mealId:'t_pasta', slot:'dinner' });
+  A.openItemForm('t_pasta');
+  A.menu = A.menu.filter(m => m.id !== 't_pasta');
+  A.renderCalendar();
+  eq(dayCell(9).querySelector('.meal-chip').textContent.trim(), A.t('removed_meal'),
+     'precondition: the day is orphaned while the meal is gone');
+  $('#saveItemBtn').click();
+  A.renderCalendar();
+  ok(/Mushroom Pasta/.test(dayCell(9).querySelector('.meal-chip').textContent),
+     'the scheduled day should point at a real meal again');
+});
+test('saving a pantry item that vanished under the form does not throw', () => {
+  resetFixture();
+  A.openPantryForm('p_salt');
+  $('#p_name').value = 'Sea salt';
+  A.pantry = A.pantry.filter(p => p.id !== 'p_salt');
+  $('#savePantryBtn').click();
+  eq(A.pantry.length, 5);
+  eq(A.pantry.find(p => p.id === 'p_salt').name, 'Sea salt');
+});
+test('a brand-new meal still gets a generated id', () => {
+  resetFixture();
+  A.openItemForm();
+  $('#f_name').value = 'Brand New';
+  $('#saveItemBtn').click();
+  const added = A.menu.find(m => m.name === 'Brand New');
+  ok(added.id && added.id !== '', 'a new meal needs an id of its own');
+  eq(A.menu.length, 5);
+});
+test('deleting asks first, and no means no', async () => {
+  resetFixture();
+  const p = A.deleteItem('t_pasta');
+  await answerConfirm(false);
+  await p;
+  eq(A.menu.length, 4, 'declining must change nothing');
+});
+test('deleting removes the meal once confirmed', async () => {
+  resetFixture();
+  const p = A.deleteItem('t_pasta');
+  await answerConfirm(true);
+  await p;
+  eq(A.menu.length, 3);
+  eq(A.byId('t_pasta'), undefined);
+});
+test('duplicating puts the copy next to the original with a fresh id', () => {
+  resetFixture();
+  A.menu[1].favourite = true;
+  A.menu[1].lastCooked = A.todayKey();
+  A.duplicateMeal('t_pasta');
+  const copy = A.menu[2];
+  ok(/\(copy\)$/.test(copy.name), 'expected a "(copy)" name, got ' + copy.name);
+  notOk(copy.id === 't_pasta', 'the copy needs its own id');
+  eq(copy.ingredients, A.menu[1].ingredients);
+  notOk('favourite' in copy,  'a copy has not earned a star');
+  notOk('lastCooked' in copy, 'a copy has never been cooked');
+  A.close(A.itemOverlay);
+});
+test('duplicating opens the copy for editing with the name selected', () => {
+  resetFixture();
+  A.duplicateMeal('t_pasta');
+  ok($('#itemOverlay.open'), 'the edit form should be open');
+  const box = $('#f_name');
+  eq(box.selectionStart, 0);
+  eq(box.selectionEnd, box.value.length);
+  A.close(A.itemOverlay);
+});
+test('the favourites filter narrows the grid', () => {
+  resetFixture();
+  A.menu[0].favourite = true;
+  A.favOnly = true; A.renderMenu();
+  eq($$('#menuGrid .card').length, 1);
+  A.favOnly = false; A.renderMenu();
+  eq($$('#menuGrid .card').length, 4);
+});
+test('searching filters the grid and explains an ingredient hit', () => {
+  resetFixture();
+  A.searchInput.value = 'tagliat';                    // ingredients only, not the name
+  A.renderMenu();
+  eq($$('#menuGrid .card').length, 1);
+  ok($('#menuGrid .match-hint'), 'an ingredient hit should say which ingredient');
+  A.searchInput.value = '';
+  A.renderMenu();
+});
+test('a search that matches nothing shows the empty state, not a blank grid', () => {
+  resetFixture();
+  A.searchInput.value = 'zzzznope';
+  A.renderMenu();
+  eq($$('#menuGrid .card').length, 0);
+  ok($('#menuGrid .empty'), 'expected the "no matches" panel');
+  A.searchInput.value = ''; A.renderMenu();
+});
+
+/* ============================================================
+   E2E — recipe view, scaling, cook mode
+   ============================================================ */
+group('E2E — the recipe view');
+test('opening a recipe fills in the title, ingredients and steps', () => {
+  resetFixture();
+  A.openRecipe('t_curry');
+  eq($('#recipeTitle').textContent, 'Chickpea Curry');
+  eq($$('#recipeIngredients li').length, 5);
+  eq($$('#recipeSteps li').length, 3);
+  A.close($('#recipeOverlay'));
+});
+test('ingredients the pantry covers are badged', () => {
+  resetFixture();
+  A.openRecipe('t_curry');
+  const badged = $$('#recipeIngredients li').filter(li => li.querySelector('.ing-have'));
+  ok(badged.length >= 1, 'garlic is in the fixture pantry and should be badged');
+  A.close($('#recipeOverlay'));
+});
+test('the servings stepper rescales the ingredients', () => {
+  resetFixture();
+  A.openRecipe('t_pasta');                       // serves 2
+  const first = () => $('#recipeIngredients li').textContent.trim();
+  eq(first(), '250g tagliatelle');
+  $('#recipeMeta [data-serv="1"]').click();
+  eq($('#recipeMeta .serv-step b').textContent, '3');
+  eq(first(), '375 g tagliatelle');
+  $('#recipeMeta [data-serv="reset"]').click();
+  eq(first(), '250g tagliatelle', 'reset must restore the original wording exactly');
+  A.close($('#recipeOverlay'));
+});
+test('scaling never writes back to the stored recipe', () => {
+  resetFixture();
+  const before = JSON.stringify(A.byId('t_pasta'));
+  A.openRecipe('t_pasta');
+  $('#recipeMeta [data-serv="1"]').click();
+  $('#recipeMeta [data-serv="1"]').click();
+  eq(JSON.stringify(A.byId('t_pasta')), before);
+  A.close($('#recipeOverlay'));
+});
+test('the favourite star and the cooked stamp round-trip', () => {
+  resetFixture();
+  A.openRecipe('t_curry');
+  $('#recipeMeta [data-meta="fav"]').click();
+  ok(A.byId('t_curry').favourite);
+  $('#recipeMeta [data-meta="fav"]').click();
+  notOk(A.byId('t_curry').favourite);
+  $('#recipeMeta [data-meta="cooked"]').click();
+  eq(A.byId('t_curry').lastCooked, A.todayKey());
+  $('#recipeMeta [data-meta="cooked"]').click();
+  eq(A.byId('t_curry').lastCooked, '', 'clicking again clears it');
+  A.close($('#recipeOverlay'));
+});
+
+group('E2E — cook mode');
+test('cook mode strips the page down and swaps the footer', () => {
+  resetFixture();
+  A.openRecipe('t_curry');
+  A.enterCookMode();
+  ok(A.document.body.classList.contains('cooking'));
+  notOk(vis($('#recipeHero')),        'the photo is not useful mid-cook');
+  notOk(vis($('.schedule-box')),      'scheduling is not useful mid-cook');
+  ok(vis($('#recipePrintBtn')) && vis($('#recipeCookExit')));
+  notOk(vis($('#recipeBatchBtn')) || vis($('#recipeEditBtn')));
+  A.exitCookMode(); A.close($('#recipeOverlay'));
+});
+test('tapping a line ticks it off, and tapping again unticks', () => {
+  resetFixture();
+  A.openRecipe('t_curry'); A.enterCookMode();
+  const li = $('#recipeIngredients li');
+  li.click(); ok(li.classList.contains('ticked'));
+  li.click(); notOk(li.classList.contains('ticked'));
+  A.exitCookMode(); A.close($('#recipeOverlay'));
+});
+test('ticks are cleared by leaving cook mode and never stored', () => {
+  resetFixture();
+  A.openRecipe('t_curry'); A.enterCookMode();
+  $('#recipeIngredients li').click();
+  A.exitCookMode();
+  eq($$('#recipeIngredients .ticked').length, 0);
+  notOk(JSON.stringify(A.byId('t_curry')).includes('ticked'));
+  A.close($('#recipeOverlay'));
+});
+test('lines are not tickable outside cook mode', () => {
+  resetFixture();
+  A.openRecipe('t_curry');
+  const li = $('#recipeIngredients li');
+  li.click();
+  notOk(li.classList.contains('ticked'));
+  A.close($('#recipeOverlay'));
+});
+test('Escape leaves cook mode first, then closes the recipe', () => {
+  resetFixture();
+  A.openRecipe('t_curry'); A.enterCookMode();
+  const esc = () => A.document.dispatchEvent(new A.KeyboardEvent('keydown', { key:'Escape', bubbles:true }));
+  esc();
+  notOk(A.document.body.classList.contains('cooking'), 'first Escape should leave cook mode');
+  ok($('#recipeOverlay.open'), 'the recipe should still be open');
+  esc();
+  notOk($('#recipeOverlay.open'), 'second Escape should close it');
+});
+test('closing the recipe while cooking releases cook mode', () => {
+  resetFixture();
+  A.openRecipe('t_curry'); A.enterCookMode();
+  A.close($('#recipeOverlay'));
+  notOk(A.document.body.classList.contains('cooking'));
+  eq(A.document.body.style.overflow, '');
+});
+
+/* ============================================================
+   E2E — calendar
+   ============================================================ */
+group('E2E — the calendar');
+test('the month grid renders the right number of days', () => {
+  resetFixture();
+  eq($$('.day[data-date]').length, 31, 'July has 31 days');
+});
+test('scheduling from the recipe view puts a chip on the day', () => {
+  resetFixture();
+  A.openRecipe('t_curry');
+  $('#r_date').value = K(9);
+  $('#r_slot').value = 'lunch';
+  $('#r_schedule').click();
+  A.close($('#recipeOverlay'));
+  A.renderCalendar();
+  eq(A.schedule[K(9)].length, 1);
+  eq(A.schedule[K(9)][0].slot, 'lunch');
+  eq(dayCell(9).querySelectorAll('.meal-chip').length, 1);
+});
+test('a day shows at most three chips plus a "+N more"', () => {
+  resetFixture();
+  ['breakfast','lunch','dinner','snack'].forEach(s => A.addScheduledEntry(K(9), { mealId:'t_curry', slot:s }));
+  A.renderCalendar();
+  eq(dayCell(9).querySelectorAll('.meal-chip[data-i]').length, 3);
+  eq(dayCell(9).querySelectorAll('.meal-chip').length, 4, 'the 4th is the "+1 more" chip');
+});
+test('removing the last meal of a day drops the day key entirely', () => {
+  resetFixture();
+  A.addScheduledEntry(K(9), { mealId:'t_curry', slot:'dinner' });
+  A.openDay(K(9));
+  $('#schedList [data-index]').click();
+  notOk(K(9) in A.schedule, 'an emptied day must not be left as []');
+  A.close($('#dayOverlay'));
+});
+test('a meal deleted from the menu still renders on the calendar', () => {
+  resetFixture();
+  A.addScheduledEntry(K(9), { mealId:'gone_forever', slot:'dinner' });
+  A.renderCalendar();
+  const chip = dayCell(9).querySelector('.meal-chip');
+  ok(chip); eq(chip.textContent.trim(), A.t('removed_meal'));
+});
+
+group('E2E — the day modal meal gallery');
+test('the meals are shown as pictures with a title and a description', () => {
+  resetFixture();
+  A.openDay(K(9));
+  const cards = $$('#d_mealPick .pick-card');
+  eq(cards.length, A.menu.length, 'one card per meal');
+  notOk($('#d_meal'), 'the dropdown it replaced must be gone');
+  const first = cards[0];
+  eq(first.querySelector('.pick-name').textContent, 'Buttermilk Pancakes', 'sorted by name');
+  eq(first.querySelector('.pick-desc').textContent, 'Light stacked pancakes.');
+  ok(first.querySelector('.pick-thumb .emoji'), 'and something to look at');
+  A.close($('#dayOverlay'));
+});
+test('nothing is picked until you pick it', async () => {
+  resetFixture();
+  A.openDay(K(9));
+  eq($$('#d_mealPick .pick-card[aria-pressed="true"]').length, 0);
+  const said = await withAlerts(() => $('#d_add').click());
+  eq(said, [A.t('need_pick_alert')], 'Add must say what is missing rather than guess a meal');
+  notOk(K(9) in A.schedule, 'and must not schedule anything');
+  A.close($('#dayOverlay'));
+});
+test('picking a card and pressing Add schedules that meal', () => {
+  resetFixture();
+  A.openDay(K(9));
+  const card = $$('#d_mealPick .pick-card').find(c => c.querySelector('.pick-name').textContent === 'Chickpea Curry');
+  card.click();
+  eq(card.getAttribute('aria-pressed'), 'true');
+  $('#d_slot').value = 'lunch';
+  $('#d_add').click();
+  eq(A.schedule[K(9)].length, 1);
+  eq(A.schedule[K(9)][0].mealId, 't_curry');
+  eq(A.schedule[K(9)][0].slot, 'lunch');
+  eq($$('#schedList .sched-item').length, 1, 'and the day list repaints');
+  A.close($('#dayOverlay'));
+});
+test('clicking the picked card again clears the choice', async () => {
+  resetFixture();
+  A.openDay(K(9));
+  const card = $$('#d_mealPick .pick-card')[0];
+  card.click(); card.click();
+  eq(card.getAttribute('aria-pressed'), 'false');
+  const said = await withAlerts(() => $('#d_add').click());
+  eq(said, [A.t('need_pick_alert')]);
+  A.close($('#dayOverlay'));
+});
+test('reopening the modal starts from nothing picked', () => {
+  resetFixture();
+  A.openDay(K(9));
+  $$('#d_mealPick .pick-card')[0].click();
+  A.openDay(K(10));
+  eq($$('#d_mealPick .pick-card[aria-pressed="true"]').length, 0,
+     'yesterday\'s choice must not be armed on a new day');
+  A.close($('#dayOverlay'));
+});
+test('Surprise me ticks the card it landed on', () => {
+  resetFixture();
+  A.openDay(K(9));
+  $('#d_surprise').click();
+  const picked = $$('#d_mealPick .pick-card[aria-pressed="true"]');
+  eq(picked.length, 1, 'the roll should not be a mystery');
+  eq(picked[0].dataset.id, A.schedule[K(9)][0].mealId);
+  A.close($('#dayOverlay'));
+});
+test('the filter appears only once scrolling would be the slower way', () => {
+  resetFixture();
+  A.openDay(K(9));
+  ok($('#d_searchWrap').hidden, 'four meals need no search box');
+  A.menu = A.menu.concat(Array.from({length:8}, (_, i) => ({
+    id:'x'+i, name:'Zebra '+i, desc:'Filler.', ingredients:['aubergine']
+  })));
+  A.openDay(K(9));
+  notOk($('#d_searchWrap').hidden, 'twelve is past the point of scrolling for one');
+  eq($$('#d_mealPick .pick-card').length, 12);
+  A.close($('#dayOverlay'));
+});
+test('the filter matches names and ingredients, and says when nothing does', () => {
+  resetFixture();
+  A.menu = A.menu.concat(Array.from({length:8}, (_, i) => ({
+    id:'x'+i, name:'Zebra '+i, desc:'Filler.', ingredients:['aubergine']
+  })));
+  A.openDay(K(9));
+  const type = v => { $('#d_search').value = v; $('#d_search').dispatchEvent(new A.Event('input')); };
+  type('pancake');
+  eq($$('#d_mealPick .pick-name').map(e => e.textContent), ['Buttermilk Pancakes']);
+  type('aubergine');
+  eq($$('#d_mealPick .pick-card').length, 8, 'searching reaches the ingredients, as on the Menu tab');
+  eq($$('#d_mealPick .pick-desc').length, 8, 'and a card carries its description');
+  type('zzzznothing');
+  eq($('#d_mealPick .pick-empty').textContent, A.t('nomatch_title'));
+  A.close($('#dayOverlay'));
+});
+test('an empty menu says so where the cards would be', () => {
+  resetFixture();
+  A.menu = [];
+  A.openDay(K(9));
+  eq($('#d_mealPick .pick-empty').textContent, A.t('no_meals_option'));
+  ok($('#d_searchWrap').hidden);
+  A.close($('#dayOverlay'));
+});
+test('switching language repaints the gallery under the open modal', () => {
+  resetFixture();
+  A.openDay(K(9));
+  try{
+    eq($('#d_mealPick .pick-meta').textContent.trim(), '⏱️ 25 min');
+    A.setLang('de');
+    eq($('#d_mealPick .pick-meta').textContent.trim(), '⏱️ 25 Min.',
+       'a stale gallery would still be showing the English unit');
+  } finally { A.setLang('en'); A.close($('#dayOverlay')); }
+});
+
+group('E2E — dragging a meal between days');
+test('a mouse drag moves the meal and keeps its slot', () => {
+  resetFixture();
+  A.addScheduledEntry(K(6), { mealId:'t_curry', slot:'lunch' });
+  A.renderCalendar();
+  dragChip(6, 12);
+  notOk(K(6) in A.schedule);
+  eq(A.schedule[K(12)].length, 1);
+  eq(A.schedule[K(12)][0].slot, 'lunch', 'the slot must survive the move');
+});
+test('a mouse drag does not arm below the movement threshold', () => {
+  resetFixture();
+  A.addScheduledEntry(K(6), { mealId:'t_curry', slot:'lunch' });
+  A.renderCalendar(); showCalendar();
+  const chip = dayCell(6).querySelector('.meal-chip[data-i]');
+  const [cx, cy] = centreOf(chip);
+  pointerAt('pointerdown', cx, cy, { on: chip });
+  pointerAt('pointermove', cx + 2, cy);
+  notOk(A.DRAG.armed, '2px is a click, not a drag');
+  notOk($('.drag-ghost'));
+  pointerAt('pointerup', cx + 2, cy);
+});
+test('dropping outside the grid cancels', () => {
+  resetFixture();
+  A.addScheduledEntry(K(6), { mealId:'t_curry', slot:'lunch' });
+  A.renderCalendar(); showCalendar();
+  const before = JSON.stringify(A.schedule);
+  const chip = dayCell(6).querySelector('.meal-chip[data-i]');
+  const [cx, cy] = centreOf(chip);
+  pointerAt('pointerdown', cx, cy, { on: chip });
+  pointerAt('pointermove', cx + 20, cy);
+  pointerAt('pointermove', 5, 5);
+  pointerAt('pointerup', 5, 5);
+  eq(JSON.stringify(A.schedule), before);
+  notOk($('.drag-ghost'), 'the ghost must be cleaned up even on a cancelled drop');
+});
+test('dropping back on the source day is a no-op', () => {
+  resetFixture();
+  A.addScheduledEntry(K(6), { mealId:'t_curry', slot:'lunch' });
+  A.renderCalendar();
+  const before = JSON.stringify(A.schedule);
+  dragChip(6, 6);
+  eq(JSON.stringify(A.schedule), before);
+});
+test('a touch drag needs a hold; moving first lets the page scroll', async () => {
+  resetFixture();
+  A.addScheduledEntry(K(6), { mealId:'t_curry', slot:'lunch' });
+  A.renderCalendar(); showCalendar();
+  const chip = dayCell(6).querySelector('.meal-chip[data-i]');
+  const [cx, cy] = centreOf(chip);
+  const touch = { on: chip, pointerType:'touch', pointerId: 7 };
+  pointerAt('pointerdown', cx, cy, touch);
+  await wait(60);
+  pointerAt('pointermove', cx, cy + 40, { pointerType:'touch', pointerId: 7 });
+  notOk(A.DRAG.armed, 'moving before the hold must abandon the drag');
+  await wait(320);
+  notOk(A.DRAG.armed, 'the abandoned hold timer must not fire later');
+  pointerAt('pointerup', cx, cy + 40, { pointerType:'touch', pointerId: 7 });
+});
+test('a touch drag arms after the hold and moves the meal', async () => {
+  resetFixture();
+  A.addScheduledEntry(K(6), { mealId:'t_curry', slot:'lunch' });
+  A.renderCalendar(); showCalendar();
+  const chip = dayCell(6).querySelector('.meal-chip[data-i]');
+  const [cx, cy] = centreOf(chip);
+  const touch = { pointerType:'touch', pointerId: 7 };
+  pointerAt('pointerdown', cx, cy, { ...touch, on: chip });
+  await wait(360);
+  ok(A.DRAG.armed, 'the drag should arm after the hold');
+  const tm = new A.TouchEvent('touchmove', { bubbles:true, cancelable:true });
+  A.document.dispatchEvent(tm);
+  ok(tm.defaultPrevented, 'once armed, the page must not scroll under the drag');
+  const [tx, ty] = centreOf(dayCell(15));
+  pointerAt('pointermove', tx, ty, touch);
+  pointerAt('pointerup',   tx, ty, touch);
+  eq(A.schedule[K(15)].length, 1);
+});
+test('an idle touchmove is left alone so the calendar can scroll', () => {
+  resetFixture();
+  const tm = new A.TouchEvent('touchmove', { bubbles:true, cancelable:true });
+  A.document.dispatchEvent(tm);
+  notOk(tm.defaultPrevented);
+});
+test('dragging the right chip when a day holds several', () => {
+  resetFixture();
+  A.addScheduledEntry(K(6), { mealId:'t_pasta', slot:'breakfast' });
+  A.addScheduledEntry(K(6), { mealId:'t_curry', slot:'dinner' });
+  A.renderCalendar();
+  dragChip(6, 12, 1);                                   // the second chip
+  eq(A.schedule[K(12)][0].mealId, 't_curry', 'data-i must index the real entry');
+  eq(A.schedule[K(6)].length, 1);
+  eq(A.schedule[K(6)][0].mealId, 't_pasta');
+});
+
+/* ============================================================
+   E2E — batch cooking
+   ============================================================ */
+group('E2E — batch cooking');
+test('the batch form proposes consecutive days from the cook date', () => {
+  resetFixture();
+  A.openBatchForm('t_curry');                            // serves 4
+  eq($('#b_portions').textContent, '4');
+  const rows = $$('#batchDays .batch-day');
+  eq(rows.length, 3, 'the cook day takes one of the four');
+  $('#b_date').value = K(6);
+  $('#b_date').dispatchEvent(new A.Event('change'));
+  eq($$('#batchDays .batch-day input').map(i => i.value), [K(7), K(8), K(9)]);
+  A.close($('#batchOverlay'));
+});
+test('the stepper grows the tail without disturbing edited rows', () => {
+  resetFixture();
+  A.openBatchForm('t_curry');
+  $('#b_date').value = K(6);
+  $('#b_date').dispatchEvent(new A.Event('change'));
+  $$('#batchDays .batch-day input')[0].value = K(20);    // the user moves one day
+  $('[data-batchp="1"]').click();
+  eq($$('#batchDays .batch-day').length, 4);
+  eq($$('#batchDays .batch-day input')[0].value, K(20), 'an edited row must survive the stepper');
+  A.close($('#batchOverlay'));
+});
+test('changing the cook date re-proposes the whole run', () => {
+  resetFixture();
+  A.openBatchForm('t_curry');
+  $('#b_date').value = K(6);
+  $('#b_date').dispatchEvent(new A.Event('change'));
+  $$('#batchDays .batch-day input')[0].value = K(20);
+  $('#b_date').value = K(10);
+  $('#b_date').dispatchEvent(new A.Event('change'));
+  eq($$('#batchDays .batch-day input')[0].value, K(11), 'moving the start moves everything');
+  A.close($('#batchOverlay'));
+});
+test('creating a batch schedules every day and lands on the calendar', () => {
+  resetFixture();
+  A.openBatchForm('t_curry');
+  $('#b_date').value = K(6);
+  $('#b_date').dispatchEvent(new A.Event('change'));
+  $('#b_create').click();
+  eq(A.batches.length, 1);
+  eq(Object.keys(A.schedule).sort(), [K(6), K(7), K(8), K(9)]);
+  ok($('#calendarView').classList.contains('active'), 'it should show you what it just did');
+  notOk($('#batchOverlay.open'));
+});
+test('leftover chips are marked; the cook day is not', () => {
+  resetFixture();
+  A.createBatch('t_curry', K(6), 'dinner', [{date:K(7),slot:'dinner'},{date:K(8),slot:'dinner'}]);
+  A.renderCalendar();
+  notOk(dayCell(6).querySelector('.meal-chip').classList.contains('leftover'));
+  ok(dayCell(7).querySelector('.meal-chip').classList.contains('leftover'));
+  ok(dayCell(8).querySelector('.meal-chip').classList.contains('leftover'));
+});
+test('the day modal labels the cook day and the leftovers', () => {
+  resetFixture();
+  A.createBatch('t_curry', K(6), 'dinner', [{date:K(7),slot:'dinner'}]);
+  A.openDay(K(6));
+  ok($('#schedList .batch-tag'));
+  notOk($('#schedList .batch-tag').classList.contains('leftover'));
+  A.openDay(K(7));
+  ok($('#schedList .batch-tag').classList.contains('leftover'));
+  ok($('#schedList .batch-del'), 'a batch row offers to remove the whole run');
+  A.close($('#dayOverlay'));
+});
+test('the whole-batch button asks before clearing everything', async () => {
+  resetFixture();
+  A.createBatch('t_curry', K(6), 'dinner', [{date:K(7),slot:'dinner'}]);
+  A.openDay(K(6));
+  $('#schedList .batch-del').click();
+  await answerConfirm(false);
+  eq(A.batches.length, 1, 'declining must change nothing');
+  $('#schedList .batch-del').click();
+  await answerConfirm(true);
+  eq(A.batches.length, 0);
+  eq(Object.keys(A.schedule).length, 0);
+  A.close($('#dayOverlay'));
+});
+test('deleting one day of a batch leaves the rest linked', () => {
+  resetFixture();
+  const id = A.createBatch('t_curry', K(6), 'dinner', [{date:K(7),slot:'dinner'},{date:K(8),slot:'dinner'}]);
+  A.openDay(K(8));
+  $('#schedList [data-index]').click();
+  eq(A.batches.length, 1);
+  eq(A.batchEntries(id).length, 2);
+  A.close($('#dayOverlay'));
+});
+test('a dragged leftover keeps its link to the batch', () => {
+  resetFixture();
+  const id = A.createBatch('t_curry', K(6), 'dinner', [{date:K(7),slot:'dinner'}]);
+  A.renderCalendar();
+  dragChip(7, 14);
+  eq(A.batchEntries(id).length, 2);
+  ok(A.isLeftover(A.schedule[K(14)][0], K(14)));
+  eq(A.batchById(id).cookDate, K(6));
+});
+
+/* ============================================================
+   E2E — pantry & shopping
+   ============================================================ */
+group('E2E — pantry and shopping');
+test('the pantry list renders every item', () => {
+  resetFixture();
+  eq($$('#pantryList .p-row').length, 5);
+});
+test('a low-stock item is flagged in the pantry', () => {
+  resetFixture();
+  eq($$('#pantryList .p-row.low').length, 1, 'Milk is the low one in the fixture');
+});
+test('the shopping list takes a typed item', () => {
+  resetFixture();
+  A.shopInput.value = 'Bread';
+  A.document.getElementById('shopAddBtn').click();
+  eq(A.shopping.length, 1);
+  eq(A.shopping[0].name, 'Bread');
+});
+test('the same item is not added twice', () => {
+  resetFixture();
+  ok(A.addShoppingItem('Bread'));
+  notOk(A.addShoppingItem('  bread  '), 'matching should ignore case and padding');
+  eq(A.shopping.length, 1);
+});
+test('"add from plan" collects the week and skips what the pantry covers', () => {
+  resetFixture();
+  A.addScheduledEntry(K(6), { mealId:'t_curry', slot:'dinner' });
+  A.document.getElementById('shopFrom').value = K(1);
+  A.document.getElementById('shopTo').value   = K(31);
+  A.addFromPlan('custom');
+  const names = A.shopping.map(s => s.name);
+  ok(names.some(n => /chickpea/i.test(n)), 'chickpeas are not in the pantry and should be listed');
+  notOk(names.some(n => /^2 cloves garlic$/i.test(n)), 'garlic IS in the pantry and should be skipped');
+});
+test('"add from plan" with nothing scheduled says so instead of adding nothing quietly', () => {
+  resetFixture();
+  A.document.getElementById('shopFrom').value = K(1);
+  A.document.getElementById('shopTo').value   = K(31);
+  A.addFromPlan('custom');
+  eq(A.shopping.length, 0);
+  ok($('#shopFeedback').textContent.length > 0, 'the user needs to be told why nothing happened');
+});
+test('a meal cooked twice in the range buys twice the ingredients', () => {
+  resetFixture();
+  A.pantry = [];
+  A.addScheduledEntry(K(6), { mealId:'t_curry', slot:'dinner' });   // 2 cans chickpeas
+  A.addScheduledEntry(K(9), { mealId:'t_curry', slot:'dinner' });   // cooked again, separately
+  A.document.getElementById('shopFrom').value = K(1);
+  A.document.getElementById('shopTo').value   = K(31);
+  A.addFromPlan('custom');
+  const cans = A.shopping.map(s => s.name).filter(n => /chickpea/i.test(n));
+  eq(cans, ['4 cans chickpeas'], 'cooking it twice needs twice the chickpeas');
+});
+test('a batch spanning several days buys the ingredients once', () => {
+  resetFixture();
+  A.pantry = [];
+  A.createBatch('t_curry', K(6), 'dinner', [{date:K(7),slot:'dinner'},{date:K(8),slot:'dinner'}]);
+  A.document.getElementById('shopFrom').value = K(1);
+  A.document.getElementById('shopTo').value   = K(31);
+  A.addFromPlan('custom');
+  const cans = A.shopping.map(s => s.name).filter(n => /chickpea/i.test(n));
+  eq(cans, ['2 cans chickpeas'], 'a batch is cooked once however many days it covers');
+});
+test('a batch counts once even when only part of it is in range', () => {
+  resetFixture();
+  A.pantry = [];
+  A.createBatch('t_curry', K(6), 'dinner', [{date:K(7),slot:'dinner'},{date:K(8),slot:'dinner'}]);
+  A.document.getElementById('shopFrom').value = K(7);      // misses the cook day
+  A.document.getElementById('shopTo').value   = K(8);
+  A.addFromPlan('custom');
+  const cans = A.shopping.map(s => s.name).filter(n => /chickpea/i.test(n));
+  eq(cans, ['2 cans chickpeas']);
+});
+test('a batch and a separate cook of the same meal count as two sessions', () => {
+  resetFixture();
+  A.pantry = [];
+  A.createBatch('t_curry', K(6), 'dinner', [{date:K(7),slot:'dinner'}]);
+  A.addScheduledEntry(K(20), { mealId:'t_curry', slot:'dinner' });
+  A.document.getElementById('shopFrom').value = K(1);
+  A.document.getElementById('shopTo').value   = K(31);
+  A.addFromPlan('custom');
+  const cans = A.shopping.map(s => s.name).filter(n => /chickpea/i.test(n));
+  eq(cans, ['4 cans chickpeas']);
+});
+test('two meals sharing an ingredient produce one summed line', () => {
+  resetFixture();
+  A.pantry = [];
+  A.addScheduledEntry(K(6), { mealId:'t_pasta', slot:'dinner' });   // 2 cloves garlic
+  A.addScheduledEntry(K(7), { mealId:'t_curry', slot:'dinner' });   // 2 cloves garlic
+  A.document.getElementById('shopFrom').value = K(1);
+  A.document.getElementById('shopTo').value   = K(31);
+  A.addFromPlan('custom');
+  const garlic = A.shopping.map(s => s.name).filter(n => /garlic/i.test(n));
+  eq(garlic, ['4 cloves garlic'], 'garlic from two meals should be one line of 4');
+});
+test('"what can I cook" counts what the pantry is missing', () => {
+  resetFixture();
+  const a = A.mealAvail(A.byId('t_salad'));
+  ok(a.missing.length >= 1, 'the fixture pantry has no lettuce');
+  A.pantry = A.byId('t_salad').ingredients.map((n, i) => ({ id:'x'+i, name:n }));
+  const b = A.mealAvail(A.byId('t_salad'));
+  eq(b.missing.length, 0);
+  ok(b.ready);
+});
+
+/* ============================================================
+   E2E — sharing the shopping list
+   ------------------------------------------------------------
+   Five routes out, all carrying one string, so most of what matters is what
+   that string says. The rest is the panel following the app: a language or unit
+   change has to reach an open share panel, or someone reads imperial on screen
+   and gets metric on their phone.
+
+   Two buttons are deliberately not clicked here. Copy would take over the real
+   clipboard, and Email would ask the operating system to open a mail client
+   mid-run; both are tested through the pure function underneath instead.
+   ============================================================ */
+group('E2E — sharing the shopping list');
+const openShare = () => { A.openShare(); };
+
+test('the text is the list as shown: same order, same wording', () => {
+  resetFixture();
+  A.addShoppingItem('500 g flour');
+  A.addShoppingItem('2 cloves garlic');
+  eq(A.shopListText(false).split('\n').slice(2), ['- 500 g flour', '- 2 cloves garlic']);
+});
+test('the heading carries the app name, the list name and today', () => {
+  resetFixture();
+  A.addShoppingItem('Bread');
+  const head = A.shopListText(false).split('\n')[0];
+  ok(head.startsWith('MealMap — Shopping list · '), 'got: ' + head);
+  ok(head.includes(String(new Date().getFullYear())), 'the date should be in there: ' + head);
+});
+test('ticked items are left out by default, and marked when asked for', () => {
+  resetFixture();
+  A.addShoppingItem('Bread');
+  A.addShoppingItem('Cheese');
+  A.shopping[0].done = true;
+  eq(A.shopListText(false).split('\n').slice(2), ['- Cheese'], 'what is left to buy');
+  eq(A.shopListText(true).split('\n').slice(2), ['- Cheese', '✓ Bread'],
+     'ticked items sort to the end and keep a tick, so a paste still reads right');
+});
+test('the units toggle reaches the shared text', () => {
+  resetFixture();
+  A.addShoppingItem('500 g flour');
+  ok(/500 g/.test(A.shopListText(false)), 'metric to start with');
+  A.setUnits('imperial');
+  ok(/1\.1 lb/.test(A.shopListText(false)), 'reading imperial on screen must not send metric to the phone');
+  A.setUnits('metric');
+});
+test('an open share panel follows a change of units', () => {
+  resetFixture();
+  A.addShoppingItem('500 g flour');
+  openShare();
+  ok(/500 g/.test($('#sharePreview').textContent));
+  A.setUnits('imperial');
+  ok(/1\.1 lb/.test($('#sharePreview').textContent), 'renderShopping() should refresh the open panel');
+  A.setUnits('metric');
+  A.close(A.shareOverlay);
+});
+test('an open share panel follows a change of language', () => {
+  resetFixture();
+  A.addShoppingItem('Bread');
+  openShare();
+  ok(/Shopping list/.test($('#sharePreview').textContent));
+  A.setLang('sl');
+  ok(/Nakupovalni seznam/.test($('#sharePreview').textContent), 'the heading is translated too');
+  A.setLang('en');
+  A.close(A.shareOverlay);
+});
+test('an empty list and an all-ticked list are told apart', () => {
+  resetFixture();
+  openShare();
+  eq($('#sharePreview').textContent, '');
+  eq($('#shareEmpty').hidden, false);
+  eq($('#shareEmpty').textContent, A.I18N.en.share_empty);
+  ok($('#shareCopyBtn').disabled, 'nothing to copy');
+
+  A.addShoppingItem('Bread');
+  A.shopping[0].done = true;
+  A.renderShare();
+  eq($('#shareEmpty').textContent, A.I18N.en.share_all_done,
+     'saying "empty" with the answer sitting in a checkbox above it would be a lie');
+  ok($('#shareCopyBtn').disabled);
+
+  $('#shareDone').checked = true;
+  A.renderShare();
+  notOk($('#shareCopyBtn').disabled);
+  ok(/Bread/.test($('#sharePreview').textContent));
+  $('#shareDone').checked = false;
+  A.close(A.shareOverlay);
+});
+test('the QR code carries the exact text on screen', () => {
+  resetFixture();
+  ['500 g flour', '2 cloves garlic', '1 pločevinka paradižnika'].forEach(A.addShoppingItem);
+  openShare();
+  notOk($('#shareQrBox').hidden, 'a short list gets a code');
+  const text = A.shopListText(false);
+  eq(qrDecode(A.qrEncode(text)), text, 'what the phone reads is what the screen says');
+  eq($('#shareQrNote').textContent, A.I18N.en.share_qr_note);
+  A.close(A.shareOverlay);
+});
+test('a list too long for a code says so instead of drawing an unreadable one', () => {
+  resetFixture();
+  for(let i=0;i<60;i++) A.addShoppingItem('Item number ' + i + ' with a long-ish name');
+  openShare();
+  ok($('#shareQrBox').hidden, 'no code');
+  eq($('#shareQrNote').textContent, A.I18N.en.share_qr_long, 'and it points at the file instead');
+  notOk($('#shareTxtBtn').disabled, 'the way out stays available');
+  A.close(A.shareOverlay);
+});
+test('the mailto: puts the heading in the subject and the items in the body', () => {
+  resetFixture();
+  A.addShoppingItem('Bread');
+  const url = A.shareMailto(A.shopListText(false), 'someone@example.com');
+  ok(url.startsWith('mailto:someone@example.com?'), 'the address is not percent-encoded: ' + url);
+  const q = new URLSearchParams(url.slice(url.indexOf('?') + 1));
+  eq(q.get('subject'), A.shopListText(false).split('\n')[0]);
+  eq(q.get('body'), '- Bread', 'the body starts at the items, not a repeat of the subject');
+});
+test('the mailto: still works with no address — the mail app asks for one', () => {
+  resetFixture();
+  A.addShoppingItem('Bread');
+  ok(A.shareMailto(A.shopListText(false), '').startsWith('mailto:?subject='));
+});
+test('the text file is named and written from the same text', async () => {
+  resetFixture();
+  A.addShoppingItem('Bread');
+  openShare();
+  // Stubbed rather than clicked through — a real click downloads a file.
+  const real = A.downloadBlob;
+  let got = null;
+  A.downloadBlob = (blob, name) => { got = { blob, name }; };
+  try{
+    $('#shareTxtBtn').click();
+    ok(got, 'the button should have asked for a download');
+    ok(/^mealmap-shopping-\d{4}-\d{2}-\d{2}\.txt$/.test(got.name), 'got: ' + got.name);
+    eq(got.blob.type, 'text/plain;charset=utf-8', 'without the charset, accented items arrive mangled');
+    eq(await got.blob.text(), A.shopListText(false));
+  } finally { A.downloadBlob = real; A.close(A.shareOverlay); }
+});
+test('the OS share button is offered only where it exists', () => {
+  resetFixture();
+  openShare();
+  eq($('#shareSendBtn').hidden, !A.navigator.share,
+     'a dead button is worse than one fewer option, so it hides rather than disables');
+  A.close(A.shareOverlay);
+});
+test('sharing reads the list and changes nothing', async () => {
+  resetFixture();
+  A.addShoppingItem('Bread');
+  A.save(A.STORE.shopping);
+  const { changed } = await auditSave(async () => {
+    openShare();
+    $('#shareDone').checked = true;
+    A.renderShare();
+    $('#shareDone').checked = false;
+    A.renderShare();
+    A.close(A.shareOverlay);
+  });
+  eq(changed, [], 'looking at the list must not rewrite it');
+});
+
+/* ============================================================
+   UNIT — storage
+   ============================================================ */
+group('Storage');
+// These use the genuine putKey against throwaway keys; everything else in the
+// run goes through the stub, which never touches storage at all.
+test('putKey does not rewrite a byte-identical value', () => {
+  const key = 'kitchenMenu.__probe';
+  const orig = WIN.Storage.prototype.setItem;
+  let writes = 0;
+  WIN.Storage.prototype.setItem = function(...a){ writes++; return orig.apply(this, a); };
+  try{
+    WIN.localStorage.removeItem(key);
+    REAL_PUT_KEY(key, 'one');  eq(writes, 1, 'the first write must happen');
+    REAL_PUT_KEY(key, 'one');  eq(writes, 1, 'an identical value must be skipped');
+    REAL_PUT_KEY(key, 'one');  eq(writes, 1);
+    REAL_PUT_KEY(key, 'two');  eq(writes, 2, 'a changed value must be written');
+    eq(WIN.localStorage.getItem(key), 'two');
+  } finally {
+    WIN.Storage.prototype.setItem = orig;
+    WIN.localStorage.removeItem(key);
+  }
+});
+test('the skip cannot hide storage being cleared underneath it', () => {
+  const key = 'kitchenMenu.__probe2';
+  try{
+    WIN.localStorage.removeItem(key);
+    REAL_PUT_KEY(key, 'value');
+    WIN.localStorage.removeItem(key);                    // e.g. the user clears site data
+    REAL_PUT_KEY(key, 'value');                          // same string as last time
+    eq(WIN.localStorage.getItem(key), 'value', 'a vanished key must be rewritten, not skipped');
+  } finally { WIN.localStorage.removeItem(key); }
+});
+
+/* The boot race. A key missing from localStorage may have overflowed to
+   IndexedDB, in which case memory holds only the first-run placeholder. Saving
+   in that window used to write the placeholder over the real data *and* delete
+   the IndexedDB copy holding it — one early click could wipe the library. */
+group('Storage — the hydration race');
+test('nothing is held back after a normal boot', () => {
+  eq(A._awaitingIdb.size, 0, 'every store was in localStorage, so none should be deferred');
+});
+test('a store still awaiting IndexedDB is never written over', () => {
+  PUT_LOG.length = 0;
+  A._awaitingIdb.add(A.STORE.menu);
+  try{
+    A.saveLocalOnly();
+    notOk(PUT_LOG.includes(A.STORE.menu), 'the placeholder menu must not be written');
+    ok(PUT_LOG.includes(A.STORE.sched),  'stores that did resolve still save normally');
+    ok(A._saveDeferred, 'the held-back save must be remembered');
+  } finally { A._awaitingIdb.delete(A.STORE.menu); A._saveDeferred = false; }
+});
+test('hydration releases the store and flushes the deferred save', async () => {
+  const keep = A.menu;
+  PUT_LOG.length = 0;
+  A._awaitingIdb.add(A.STORE.menu);
+  try{
+    A.saveLocalOnly();
+    notOk(PUT_LOG.includes(A.STORE.menu), 'precondition: the save was held back');
+    await A.hydrateFromIdb();
+    eq(A._awaitingIdb.size, 0, 'the store must be released once IndexedDB has answered');
+    notOk(A._saveDeferred);
+    ok(PUT_LOG.includes(A.STORE.menu), 'the held-back store must be written once hydration settles');
+  } finally { A.menu = keep; A._saveDeferred = false; }
+});
+test('hydration never leaves saving blocked, even when IndexedDB fails', async () => {
+  const keepIdb = A._idb, keepMenu = A.menu;
+  const broken = A.Promise.reject(new Error('IndexedDB unavailable'));
+  broken.catch(()=>{});                                  // no unhandled-rejection noise
+  try{
+    A._idb = broken;
+    PUT_LOG.length = 0;
+    A._awaitingIdb.add(A.STORE.menu);
+    A.saveLocalOnly();
+    await A.hydrateFromIdb();
+    eq(A._awaitingIdb.size, 0, 'a failed hydration must still unblock saving');
+    ok(PUT_LOG.includes(A.STORE.menu), 'and the deferred save must still go through');
+  } finally { A._idb = keepIdb; A.menu = keepMenu; A._saveDeferred = false; }
+});
+test('first run defers nothing once IndexedDB comes back empty', async () => {
+  // A key absent because nothing was ever saved must not block saving forever.
+  const keep = A.menu;
+  try{
+    A._awaitingIdb.add(A.STORE.menu);
+    await A.hydrateFromIdb();                            // finds nothing for that key
+    PUT_LOG.length = 0;
+    A.saveLocalOnly();
+    ok(PUT_LOG.includes(A.STORE.menu), 'saving must work normally after an empty hydration');
+  } finally { A.menu = keep; A._saveDeferred = false; }
+});
+/* Every narrowed save(), audited against what the action really changed. */
+group('Storage — narrowed saves');
+test('a shopping tick does not serialise the menu', async () => {
+  resetFixture();
+  A.addShoppingItem('Bread'); A.renderShopping();
+  const r = await auditSave(() => { $('#shopList [data-action="toggle"]').click(); });
+  eq(r.changed, [A.STORE.shopping]);
+  eq(r.written, [A.STORE.shopping], 'only the store that changed should be written');
+});
+test('a pantry stock toggle only writes the pantry', async () => {
+  resetFixture();
+  const r = await auditSave(() => { $('#pantryList [data-action="low"]').click(); });
+  eq(r.written, [A.STORE.pantry]);
+});
+test('dragging a meal writes the schedule, not the menu', async () => {
+  resetFixture();
+  A.addScheduledEntry(K(6), { mealId:'t_curry', slot:'lunch' });
+  A.renderCalendar();
+  const r = await auditSave(() => dragChip(6, 12));
+  eq(r.written, [A.STORE.sched]);
+});
+test('dragging a batch cook day also writes the batches', async () => {
+  resetFixture();
+  A.createBatch('t_curry', K(6), 'dinner', [{date:K(7),slot:'dinner'},{date:K(8),slot:'dinner'}]);
+  A.renderCalendar();
+  // moving the cook day past its leftovers re-derives cookDate, so `batches`
+  // changes too — the case a narrowing would most easily get wrong
+  const r = await auditSave(() => dragChip(6, 20));
+  eq(r.changed.sort(), [A.STORE.batches, A.STORE.sched].sort());
+  eq(r.written.sort(),  [A.STORE.batches, A.STORE.sched].sort());
+});
+test('creating a batch writes the schedule and the batches', async () => {
+  resetFixture();
+  const r = await auditSave(() => A.createBatch('t_curry', K(6), 'dinner', [{date:K(7),slot:'dinner'}]));
+  eq(r.written.sort(), [A.STORE.batches, A.STORE.sched].sort());
+});
+test('removing a whole batch writes the schedule and the batches', async () => {
+  resetFixture();
+  const id = A.createBatch('t_curry', K(6), 'dinner', [{date:K(7),slot:'dinner'}]);
+  const r = await auditSave(() => A.removeBatch(id));
+  eq(r.written.sort(), [A.STORE.batches, A.STORE.sched].sort());
+});
+test('deleting a batch day writes the schedule and the batches', async () => {
+  resetFixture();
+  A.createBatch('t_curry', K(6), 'dinner', [{date:K(7),slot:'dinner'}]);
+  A.openDay(K(7));
+  const r = await auditSave(() => { $('#schedList [data-index]').click(); });
+  ok(r.written.includes(A.STORE.sched) && r.written.includes(A.STORE.batches));
+  A.close($('#dayOverlay'));
+});
+test('starring a recipe writes only the menu', async () => {
+  resetFixture();
+  const r = await auditSave(() => A.toggleFavourite('t_curry'));
+  eq(r.written, [A.STORE.menu]);
+});
+test('saving a meal writes only the menu', async () => {
+  resetFixture();
+  A.openItemForm('t_pasta');
+  $('#f_name').value = 'Renamed';
+  const r = await auditSave(() => { $('#saveItemBtn').click(); });
+  eq(r.written, [A.STORE.menu]);
+});
+test('deleting a meal writes only the menu', async () => {
+  resetFixture();
+  const r = await auditSave(async () => {
+    const p = A.deleteItem('t_pasta');
+    await answerConfirm(true);
+    await p;
+  });
+  eq(r.written, [A.STORE.menu]);
+});
+test('adding from the plan writes only the shopping list', async () => {
+  resetFixture();
+  A.addScheduledEntry(K(6), { mealId:'t_curry', slot:'dinner' });
+  A.document.getElementById('shopFrom').value = K(1);
+  A.document.getElementById('shopTo').value   = K(31);
+  const r = await auditSave(() => A.addFromPlan('custom'));
+  eq(r.written, [A.STORE.shopping]);
+});
+test('"add low stock" reads the pantry but writes only the shopping list', async () => {
+  resetFixture();
+  const r = await auditSave(() => { A.document.getElementById('shopLowBtn').click(); });
+  eq(r.written, [A.STORE.shopping]);
+});
+test('an unnarrowed save still writes everything', () => {
+  resetFixture();
+  PUT_LOG.length = 0;
+  A.save();
+  eq([...new Set(PUT_LOG)].sort(), A.STORES.map(s => s.key).sort(),
+     'saying nothing must still mean "all", so a forgotten narrowing cannot lose data');
+});
+test('every store is covered by the save/hydrate list', () => {
+  const keys = A.STORES.map(s => s.key).sort();
+  eq(keys, [A.STORE.batches, A.STORE.menu, A.STORE.pantry, A.STORE.sched, A.STORE.shopping].sort(),
+     'STORES is what both saving and hydration walk — a store missing from it is a store that never persists');
+  A.STORES.forEach(s => ok(typeof s.get === 'function' && typeof s.set === 'function', s.key + ' needs both accessors'));
+});
+test('load() survives corrupt JSON rather than taking the app down', () => {
+  const key = 'kitchenMenu.__probe3';
+  try{
+    WIN.localStorage.setItem(key, '{not json');
+    eq(A.load(key, 'fallback'), 'fallback');
+    eq(A.load('kitchenMenu.__never_set', 42), 42);
+  } finally { WIN.localStorage.removeItem(key); }
+});
+
+/* ============================================================
+   Dialogs — dismissing by the backdrop
+   ============================================================ */
+group('Dialogs — the backdrop');
+/* The browser fires `click` on the nearest common ancestor of the press and the
+   release. Drag-select text inside a dialog, let go past its edge, and that
+   ancestor is the backdrop — indistinguishable, to a plain click handler, from
+   a deliberate click outside. These pin the press as the deciding event. */
+function pressOn(el){
+  el.dispatchEvent(new WIN.PointerEvent('pointerdown', { bubbles:true, cancelable:true, pointerId:1, button:0, buttons:1 }));
+}
+function clickOn(el){
+  el.dispatchEvent(new WIN.MouseEvent('click', { bubbles:true, cancelable:true, button:0 }));
+}
+const OVERLAYS = ['dataOverlay','itemOverlay','pantryOverlay','dayOverlay','recipeOverlay','batchOverlay'];
+function anOverlay(id){ const ov = WIN.document.getElementById(id); ok(ov, id + ' is missing'); return ov; }
+
+test('pressing and releasing on the backdrop closes the dialog', () => {
+  const ov = anOverlay('dataOverlay');
+  A.open(ov);
+  ok(ov.classList.contains('open'), 'precondition: it opened');
+  pressOn(ov); clickOn(ov);
+  notOk(ov.classList.contains('open'), 'a real outside click must still close it');
+});
+test('releasing on the backdrop after pressing inside does NOT close it', () => {
+  const ov = anOverlay('dataOverlay');
+  A.open(ov);
+  const inside = ov.querySelector('.modal-body') || ov.querySelector('.modal');
+  // press inside, as if starting a text selection…
+  pressOn(inside);
+  // …and let go past the edge: the browser targets `click` at the shared ancestor
+  clickOn(ov);
+  ok(ov.classList.contains('open'), 'a drag that started inside must not dismiss the dialog');
+  A.close(ov);
+});
+test('a press inside does not arm the next backdrop click either', () => {
+  const ov = anOverlay('itemOverlay');
+  A.open(ov);
+  pressOn(ov.querySelector('.modal'));
+  clickOn(ov);
+  ok(ov.classList.contains('open'), 'still open after the inside-press drag');
+  // now a genuine outside click, which must work normally
+  pressOn(ov); clickOn(ov);
+  notOk(ov.classList.contains('open'), 'the very next real outside click must close it');
+});
+test('every dialog behaves the same way', () => {
+  OVERLAYS.forEach(id => {
+    const ov = anOverlay(id);
+    A.open(ov);
+    pressOn(ov.querySelector('.modal')); clickOn(ov);
+    ok(ov.classList.contains('open'), id + ' closed on a drag that started inside');
+    pressOn(ov); clickOn(ov);
+    notOk(ov.classList.contains('open'), id + ' ignored a real outside click');
+  });
+});
+test('the ✕ and Cancel buttons still close, and Escape still closes', () => {
+  const ov = anOverlay('pantryOverlay');
+  A.open(ov);
+  ov.querySelector('[data-close]').click();
+  notOk(ov.classList.contains('open'), 'the ✕ button must be unaffected');
+  A.open(ov);
+  WIN.document.dispatchEvent(new WIN.KeyboardEvent('keydown', { key:'Escape', bubbles:true }));
+  notOk(ov.classList.contains('open'), 'Escape must be unaffected');
+});
+
+/* ============================================================
+   AI assistant — driven through a fake fetch
+   ============================================================ */
+group('AI — where the key comes from');
+/* The field is type=password, so a password manager fills it. A saved password
+   survives "clear site data" and syncs across devices; localStorage does
+   neither. That combination put a key in the box that the app denied having. */
+test('a key visible in the box is used even when storage is empty', async () => {
+  const box = WIN.document.getElementById('aiKey');
+  const savedBox = box.value, savedKey = WIN.localStorage.getItem(A.STORE.aiKey);
+  const savedProv = WIN.localStorage.getItem(A.STORE.aiProvider);
+  try{
+    WIN.localStorage.removeItem(A.STORE.aiKey);          // as if site data were cleared
+    WIN.localStorage.setItem(A.STORE.aiProvider, 'gemini');
+    box.value = 'FILLED-BY-PASSWORD-MANAGER';            // as if the manager refilled it
+    eq(A.aiKeyVal(), 'FILLED-BY-PASSWORD-MANAGER', 'the box must outrank empty storage');
+    await withFetch({ json:{ candidates:[{ content:{ parts:[{ text:'{}' }] } }] } }, async calls => {
+      await A.aiChat('x');
+      eq(calls[0].headers['x-goog-api-key'], 'FILLED-BY-PASSWORD-MANAGER',
+         'the request must carry the key the user can actually see');
+    });
+  } finally {
+    box.value = savedBox;
+    savedKey === null ? WIN.localStorage.removeItem(A.STORE.aiKey) : WIN.localStorage.setItem(A.STORE.aiKey, savedKey);
+    savedProv === null ? WIN.localStorage.removeItem(A.STORE.aiProvider) : WIN.localStorage.setItem(A.STORE.aiProvider, savedProv);
+  }
+});
+test('typing a key stores it without waiting for a blur', () => {
+  const box = WIN.document.getElementById('aiKey');
+  const savedBox = box.value, savedKey = WIN.localStorage.getItem(A.STORE.aiKey);
+  try{
+    box.value = 'PASTED-KEY';
+    box.dispatchEvent(new WIN.Event('input', { bubbles:true }));   // no change/blur
+    eq(WIN.localStorage.getItem(A.STORE.aiKey), 'PASTED-KEY');
+    // and emptying it forgets, rather than leaving '' behind
+    box.value = '';
+    box.dispatchEvent(new WIN.Event('input', { bubbles:true }));
+    eq(WIN.localStorage.getItem(A.STORE.aiKey), null, 'an empty box must remove the entry, not store an empty string');
+  } finally {
+    box.value = savedBox;
+    savedKey === null ? WIN.localStorage.removeItem(A.STORE.aiKey) : WIN.localStorage.setItem(A.STORE.aiKey, savedKey);
+  }
+});
+test('an empty box with nothing stored still reports no key', () => {
+  const box = WIN.document.getElementById('aiKey');
+  const savedBox = box.value, savedKey = WIN.localStorage.getItem(A.STORE.aiKey);
+  try{
+    box.value = '   ';                                    // whitespace is not a key
+    WIN.localStorage.removeItem(A.STORE.aiKey);
+    eq(A.aiKeyVal(), '', 'blank must stay blank, or the app would try to authenticate with nothing');
+  } finally {
+    box.value = savedBox;
+    savedKey === null ? WIN.localStorage.removeItem(A.STORE.aiKey) : WIN.localStorage.setItem(A.STORE.aiKey, savedKey);
+  }
+});
+
+group('AI — the request');
+test('Claude gets the key in a header and the recipe in the user message', async () => {
+  await withAiKey('anthropic', () => withFetch(
+    { json: { content:[{ type:'text', text: JSON.stringify(AI_RECIPE) }] } },
+    async calls => {
+      await A.aiChat('some recipe text');
+      eq(calls.length, 1);
+      eq(calls[0].url, 'https://api.anthropic.com/v1/messages');
+      eq(calls[0].headers['x-api-key'], 'TEST-KEY-NOT-REAL');
+      eq(calls[0].headers['anthropic-version'], '2023-06-01');
+      notOk(calls[0].url.includes('TEST-KEY'), 'the key must never appear in the URL');
+      eq(calls[0].body.model, 'claude-opus-5');
+      eq(calls[0].body.messages, [{ role:'user', content:'some recipe text' }]);
+      ok(calls[0].body.system.length > 100, 'the system prompt should be sent');
+    }));
+});
+test('Claude asks for low effort only for models known to accept it', async () => {
+  await withAiKey('anthropic', () => withFetch(
+    { json: { content:[{ type:'text', text:'{}' }] } },
+    async calls => { await A.aiChat('x'); eq(calls[0].body.output_config, { effort:'low' }); }));
+  // the Model box is free text; an unknown id must not carry a field that 400s
+  await withAiKey('anthropic', () => withFetch(
+    { json: { content:[{ type:'text', text:'{}' }] } },
+    async calls => { await A.aiChat('x'); eq(calls[0].body.output_config, undefined); }), 'some-future-model');
+});
+test('Gemini puts the key in a header, not the query string', async () => {
+  await withAiKey('gemini', () => withFetch(
+    { json: { candidates:[{ content:{ parts:[{ text: JSON.stringify(AI_RECIPE) }] } }] } },
+    async calls => {
+      await A.aiChat('x');
+      ok(calls[0].url.endsWith(':generateContent'), calls[0].url);
+      eq(calls[0].headers['x-goog-api-key'], 'TEST-KEY-NOT-REAL');
+      notOk(/[?&]key=/.test(calls[0].url), 'a key in the URL leaks into logs, history and referrers');
+      eq(calls[0].body.generationConfig.responseMimeType, 'application/json');
+    }));
+});
+test('OpenAI gets a bearer token and json_object mode', async () => {
+  await withAiKey('openai', () => withFetch(
+    { json: { choices:[{ message:{ content: JSON.stringify(AI_RECIPE) } }] } },
+    async calls => {
+      await A.aiChat('x');
+      eq(calls[0].url, 'https://api.openai.com/v1/chat/completions');
+      eq(calls[0].headers['authorization'], 'Bearer TEST-KEY-NOT-REAL');
+      eq(calls[0].body.response_format, { type:'json_object' });
+      eq(calls[0].body.messages[0].role, 'system');
+    }));
+});
+test('no key means no request at all', async () => {
+  const saved = AI_SETTINGS.map(k => [A.STORE[k], A.localStorage.getItem(A.STORE[k])]);
+  try{
+    A.localStorage.removeItem(A.STORE.aiKey);
+    await withFetch({}, async calls => {
+      let threw = false;
+      try{ await A.aiChat('x'); }catch(e){ threw = true; }
+      ok(threw, 'it should refuse before reaching the network');
+      eq(calls.length, 0);
+    });
+  } finally { saved.forEach(([k, v]) => v === null ? A.localStorage.removeItem(k) : A.localStorage.setItem(k, v)); }
+});
+
+group('AI — the settings panel');
+test('Test connection sits beside the key box, and Disconnect is gone', () => {
+  // Reached from #aiKey rather than $('.key-row'): the class is a layout pattern
+  // and the share panel now uses it too, so "the first one in the document" is
+  // no longer the same thing as "the AI one".
+  const row = $('#aiKey').closest('.key-row');
+  ok(row, 'the key input should sit in a key row');
+  ok(row.querySelector('#aiTestBtn'), 'Test connection should be the button next to it');
+  notOk($('#aiForgetBtn'), 'the Disconnect button was removed');
+  eq($$('#aiTestBtn').length, 1, 'and Test connection must not be duplicated');
+});
+test('emptying the key box removes the stored key', async () => {
+  await withAiKey('gemini', async () => {
+    eq(A.aiKeyVal(), 'TEST-KEY-NOT-REAL');
+    $('#aiKey').value = '   ';
+    $('#aiKey').dispatchEvent(new A.Event('change'));
+    eq(A.aiKeyVal(), '', 'clearing the field is what replaces the Disconnect button');
+    eq(WIN.localStorage.getItem(A.STORE.aiKey), null, 'the entry should be dropped, not left empty');
+    ok($('#aiStatus').textContent.length > 0, 'and it should say so — there is no button to confirm it');
+  });
+});
+test('a key that is still there is not cleared by an unrelated change event', async () => {
+  await withAiKey('gemini', async () => {
+    $('#aiKey').value = 'STILL-HERE';
+    $('#aiKey').dispatchEvent(new A.Event('change'));
+    eq(A.aiKeyVal(), 'STILL-HERE');
+  });
+});
+
+group('AI — the app language goes into the prompt');
+test('the system prompt names the language the app is set to', () => {
+  const before = A.lang;
+  try{
+    [['sl','Slovenian'],['de','German'],['pt','Portuguese'],['en','English']].forEach(([code, name]) => {
+      A.setLang(code);
+      const p = A.aiSystemPrompt();
+      ok(p.includes(name), 'expected the prompt to name ' + name + ' when lang=' + code);
+      ok(/translating from the source text/.test(p), 'and to ask for a translation');
+    });
+  } finally { A.setLang(before); }
+});
+test('the prompt no longer asks for the original language', () => {
+  ok(!/ORIGINAL language/i.test(A.aiSystemPrompt()),
+     'that instruction predates the extra languages and defeats pantry matching');
+});
+test('it leaves numbers and units alone, because the app converts them', () => {
+  ok(/Leave numbers, quantities, units and URLs exactly/.test(A.aiSystemPrompt()));
+});
+test('the language reaches the wire for every provider', async () => {
+  const before = A.lang;
+  try{
+    A.setLang('sl');
+    await withAiKey('anthropic', () => withFetch({ json:{ content:[{type:'text',text:'{}'}] } },
+      async c => { await A.aiChat('x'); ok(c[0].body.system.includes('Slovenian')); }));
+    await withAiKey('gemini', () => withFetch({ json:{ candidates:[{content:{parts:[{text:'{}'}]}}] } },
+      async c => { await A.aiChat('x'); ok(c[0].body.systemInstruction.parts[0].text.includes('Slovenian')); }));
+    await withAiKey('openai', () => withFetch({ json:{ choices:[{message:{content:'{}'}}] } },
+      async c => { await A.aiChat('x'); ok(c[0].body.messages[0].content.includes('Slovenian')); }));
+  } finally { A.setLang(before); }
+});
+
+group('AI — reading the response');
+test('each provider’s answer is unwrapped to the same JSON text', async () => {
+  const wants = JSON.stringify(AI_RECIPE);
+  await withAiKey('anthropic', () => withFetch({ json:{ content:[{type:'text',text:wants},{type:'thinking',thinking:'ignore me'}] } },
+    async () => eq(await A.aiChat('x'), wants)));
+  await withAiKey('gemini', () => withFetch({ json:{ candidates:[{content:{parts:[{text:wants}]}}] } },
+    async () => eq(await A.aiChat('x'), wants)));
+  await withAiKey('openai', () => withFetch({ json:{ choices:[{message:{content:wants}}] } },
+    async () => eq(await A.aiChat('x'), wants)));
+});
+test('an HTTP error surfaces the provider and status', async () => {
+  await withAiKey('anthropic', () => withFetch({ status:401, text:'bad key' }, async () => {
+    let msg = '';
+    try{ await A.aiChat('x'); }catch(e){ msg = e.message; }
+    ok(/Claude 401/.test(msg), msg);
+  }));
+  await withAiKey('gemini', () => withFetch({ status:429, text:'slow down' }, async () => {
+    let msg = '';
+    try{ await A.aiChat('x'); }catch(e){ msg = e.message; }
+    ok(/Gemini 429/.test(msg), msg);
+  }));
+});
+test('a refusal or a blocked prompt is reported, not parsed', async () => {
+  await withAiKey('anthropic', () => withFetch({ json:{ stop_reason:'refusal', content:[] } }, async () => {
+    let threw = false; try{ await A.aiChat('x'); }catch(e){ threw = true; }
+    ok(threw, 'a refusal must not fall through as empty text');
+  }));
+  await withAiKey('gemini', () => withFetch({ json:{ promptFeedback:{ blockReason:'SAFETY' } } }, async () => {
+    let threw = false; try{ await A.aiChat('x'); }catch(e){ threw = true; }
+    ok(threw);
+  }));
+  await withAiKey('gemini', () => withFetch({ json:{ candidates:[] } }, async () => {
+    let threw = false; try{ await A.aiChat('x'); }catch(e){ threw = true; }
+    ok(threw, 'no candidate is an error, not an empty recipe');
+  }));
+});
+test('parseRecipeJSON copes with fences and surrounding prose', () => {
+  eq(A.parseRecipeJSON('```json\n{"name":"X"}\n```'), { name:'X' });
+  eq(A.parseRecipeJSON('Here you go: {"name":"X"} hope that helps'), { name:'X' });
+  eq(A.parseRecipeJSON('{"name":"X"}'), { name:'X' });
+  throws(() => A.parseRecipeJSON('not json at all'));
+});
+test('a fetched URL is passed through the reader before the model sees it', async () => {
+  await withFetch({ text:'PAGE TEXT' }, async calls => {
+    const out = await A.fetchUrlText('https://example.test/recipe');
+    ok(calls[0].url.includes('example.test/recipe'));
+    eq(out, 'PAGE TEXT');
+  });
+});
+test('isUrl only accepts http(s)', () => {
+  ok(A.isUrl('https://example.test/x'));
+  ok(A.isUrl('  http://example.test/x  '));
+  notOk(A.isUrl('javascript:alert(1)'));
+  notOk(A.isUrl('example.test'));
+  notOk(A.isUrl('just some recipe text'));
+});
+
+group('AI — filling the form');
+test('an imported recipe lands in the form fields', () => {
+  resetFixture();
+  A.openItemForm();
+  A.fillItemFormFromRecipe(AI_RECIPE, true);
+  eq($('#f_name').value, 'Testna jed');
+  eq($('#f_servings').value, '4');
+  eq($('#f_ingredients').value.split('\n'), ['500 g moke','2 jajci']);
+  eq($('#f_source').value, 'https://example.test/r');
+  A.close(A.itemOverlay);
+});
+test('imported quantities are converted to the unit preference', () => {
+  resetFixture();
+  A.setUnits('imperial');
+  A.openItemForm();
+  A.fillItemFormFromRecipe({ name:'X', ingredients:['500 g flour'], steps:[] }, true);
+  ok(/oz|lb/.test($('#f_ingredients').value), 'expected imperial, got ' + $('#f_ingredients').value);
+  A.setUnits('metric');
+  A.close(A.itemOverlay);
+});
+test('keeping existing values does not overwrite what is already typed', () => {
+  resetFixture();
+  A.openItemForm();
+  $('#f_name').value = 'My own title';
+  A.fillItemFormFromRecipe(AI_RECIPE, false);          // keep, don't replace
+  eq($('#f_name').value, 'My own title', 'a filled field must survive');
+  eq($('#f_ingredients').value.split('\n'), ['500 g moke','2 jajci'], 'an empty field still fills');
+  A.close(A.itemOverlay);
+});
+
+/* ============================================================
+   File sync — driven through a fake FileSystemFileHandle
+   ------------------------------------------------------------
+   The picker itself needs a real user gesture and an OS dialog, so what is
+   tested is everything behind it: reading, writing, the permission gate, and the
+   poll that has to tell someone else's edit from our own write.
+   ============================================================ */
+function fakeFileHandle(initialText = '', opts = {}){
+  let text = initialText, mtime = opts.mtime ?? 1000;
+  return {
+    name: opts.name || 'mealmap.json',
+    writes: 0,
+    async queryPermission(){ return opts.permission || 'granted'; },
+    async requestPermission(){ return opts.onRequest || 'granted'; },
+    async getFile(){ return { size:text.length, lastModified:mtime, text: async () => text }; },
+    async createWritable(){
+      let buf = '';
+      const h = this;
+      return { async write(c){ buf += c; }, async close(){ text = buf; mtime += 1000; h.writes++; } };
+    },
+    // test-side helpers, standing in for another device having written the file
+    _put(newText, newMtime){ text = newText; mtime = newMtime; },
+    _text(){ return text; },
+    _mtime(){ return mtime; }
+  };
+}
+const withFsHandle = async (handle, fn) => {
+  const keptHandle = A.fsHandle, keptSeen = A.fsLastSeen, keptAuto = $('#fsAuto').checked;
+  A.fsHandle = handle; A.fsLastSeen = 0;
+  try{ return await fn(); }
+  finally{ A.fsHandle = keptHandle; A.fsLastSeen = keptSeen; $('#fsAuto').checked = keptAuto; A.fsStopPolling(); }
+};
+
+group('File sync');
+test('the Settings header is the brand, not the word "Settings"', () => {
+  const head = $('#dataOverlay .modal-head');
+  eq(head.querySelector('h3').textContent.trim(), 'MealMap');
+  ok(head.querySelector('.about-head .logo'), 'the brand mark should be there');
+  ok(head.querySelector('.about-head span').textContent.length > 20, 'and the tagline');
+  notOk($$('#dataOverlay h3').some(h => /^Settings$/i.test(h.textContent.trim())),
+        'the old heading only repeated the button that opened the panel');
+  ok($('.about-body'), 'the longer description stays in the body');
+});
+test('the header still fits, in every language and on a phone', () => {
+  resetFixture();
+  A.open($('#dataOverlay'));
+  const head = $('#dataOverlay .modal-head');
+  const before = A.lang;
+  try{
+    Object.keys(A.I18N).forEach(l => {
+      A.setLang(l);
+      const box = head.getBoundingClientRect();
+      const tag = head.querySelector('.about-head span').getBoundingClientRect();
+      const x = head.querySelector('.close').getBoundingClientRect();
+      ok(x.right <= box.right + 1, l + ': the close button was pushed outside the header');
+      ok(tag.right <= x.left + 1,  l + ': the tagline runs into the close button');
+    });
+  } finally { A.setLang(before); A.close($('#dataOverlay')); }
+});
+test('Settings runs About, then the AI key, then the data options', () => {
+  const order = $$('#dataOverlay h4.data-sub').map(el => el.textContent.trim());
+  eq(order.length, 4);
+  ok(/AI/i.test(order[0]),          'the AI key comes first — set up once, used daily');
+  ok(/sharing|Data/i.test(order[1]));
+  ok(/file/i.test(order[2]));
+  ok(/OneDrive/i.test(order[3]));
+});
+test('moving the AI block did not leave a second copy of its controls behind', () => {
+  ['aiProvider','aiModel','aiKey','aiTestBtn','aiStatus'].forEach(id =>
+    eq($$('#' + id).length, 1, id + ' must appear exactly once'));
+});
+test('the section is offered only where the browser can honour it', () => {
+  // Chromium here; on Firefox or Safari the controls hide and the note shows.
+  eq(typeof A.fsSupported(), 'boolean');
+  eq($('#fsActions').hidden, !A.fsSupported());
+  eq($('#fsUnsupported').hidden, A.fsSupported());
+});
+test('the buttons that need a file are disabled, and look it', () => {
+  eq($('#fsLoad').disabled, !A.fsHandle, 'Load needs a linked file');
+  if($('#fsLoad').disabled){
+    // via WIN, not the proxy: getComputedStyle needs `this` to be the window
+    const cs = WIN.getComputedStyle($('#fsLoad'));
+    ok(parseFloat(cs.opacity) < 0.9, 'a disabled button must not look clickable — it was opacity 1');
+    eq(cs.cursor, 'not-allowed');
+  }
+});
+test('writing puts the whole payload in the file', async () => {
+  resetFixture();
+  const h = fakeFileHandle();
+  await withFsHandle(h, async () => {
+    await A.fsWrite();
+    const written = JSON.parse(h._text());
+    eq(written.app, 'kitchen-menu');
+    eq(written.version, A.SCHEMA_VERSION);
+    eq(Object.keys(written).sort(),
+       ['app','batches','exportedAt','menu','pantry','schedule','shopping','version']);
+    eq(written.menu.length, 4);
+  });
+});
+test('reading replaces every store from the file', async () => {
+  resetFixture();
+  const remote = JSON.stringify({ app:'kitchen-menu', version:4,
+    menu:[{ id:'f1', name:'From the file', ingredients:[], steps:[] }],
+    schedule:{}, pantry:[], shopping:[{ id:'s1', name:'From the file too' }], batches:[] });
+  await withFsHandle(fakeFileHandle(remote, { mtime:5000 }), async () => {
+    await A.fsRead();
+    eq(A.menu.length, 1);
+    eq(A.menu[0].name, 'From the file');
+    eq(A.shopping[0].name, 'From the file too');
+  });
+});
+test('a file that is not a MealMap export is refused, not half-applied', async () => {
+  resetFixture();
+  const before = A.menu.length;
+  await withFsHandle(fakeFileHandle('{"something":"else"}'), async () => {
+    let threw = false;
+    try{ await A.fsRead(); }catch(e){ threw = true; }
+    ok(threw);
+    eq(A.menu.length, before, 'local data must survive a bad file');
+  });
+  await withFsHandle(fakeFileHandle('not json at all'), async () => {
+    let threw = false;
+    try{ await A.fsRead(); }catch(e){ threw = true; }
+    ok(threw, 'unparseable content must raise, not crash');
+  });
+});
+test('the poll ignores our own write', async () => {
+  resetFixture();
+  const h = fakeFileHandle();
+  await withFsHandle(h, async () => {
+    $('#fsAuto').checked = true;
+    await A.fsWrite();                       // fsLastSeen now matches the file
+    const name = A.menu[0].name;
+    A.menu[0].name = 'Changed locally after saving';
+    await A.fsCheck();                       // must NOT pull our own write back
+    eq(A.menu[0].name, 'Changed locally after saving',
+       'reading back our own write would undo whatever was typed next');
+    A.menu[0].name = name;
+  });
+});
+test('the poll pulls a change made by someone else', async () => {
+  resetFixture();
+  const h = fakeFileHandle();
+  await withFsHandle(h, async () => {
+    $('#fsAuto').checked = true;
+    await A.fsWrite();
+    // the other device writes, so the file is newer than what we last saw
+    h._put(JSON.stringify({ app:'kitchen-menu', version:4,
+      menu:[{ id:'o1', name:'Their meal', ingredients:[], steps:[] }],
+      schedule:{}, pantry:[], shopping:[], batches:[] }), h._mtime() + 60000);
+    await A.fsCheck();
+    eq(A.menu.length, 1);
+    eq(A.menu[0].name, 'Their meal');
+  });
+});
+test('nothing is polled while automatic updating is off', async () => {
+  resetFixture();
+  const h = fakeFileHandle(JSON.stringify({ app:'kitchen-menu', version:4,
+    menu:[{ id:'x', name:'Should not arrive', ingredients:[], steps:[] }],
+    schedule:{}, pantry:[], shopping:[], batches:[] }), { mtime: 9e12 });
+  await withFsHandle(h, async () => {
+    $('#fsAuto').checked = false;
+    await A.fsCheck();
+    eq(A.menu.length, 4, 'the fixture must be untouched');
+  });
+});
+test('a lapsed permission blocks reading and writing rather than throwing at the user', async () => {
+  resetFixture();
+  const denied = fakeFileHandle('', { permission:'prompt' });
+  await withFsHandle(denied, async () => {
+    let threw = false;
+    try{ await A.fsWrite(); }catch(e){ threw = true; }
+    ok(threw, 'fsWrite should refuse');
+    eq(denied.writes, 0, 'and must not have written anything');
+    // the timer path must stay silent — requestPermission needs a user gesture
+    $('#fsAuto').checked = true;
+    await A.fsCheck();
+    eq(A.menu.length, 4);
+  });
+});
+test('a debounced push does nothing without a linked file', () => {
+  resetFixture();
+  const kept = A.fsHandle;
+  try{ A.fsHandle = null; A.scheduleFsPush(); }        // must not throw
+  finally{ A.fsHandle = kept; }
+});
+test('the payload helpers are what every route in and out shares', () => {
+  resetFixture();
+  const p = A.syncPayload();
+  eq(Object.keys(p).sort(), ['app','batches','exportedAt','menu','pantry','schedule','shopping','version']);
+  notOk(A.applyPayload({ nope:true }), 'a non-MealMap object must be rejected');
+  notOk(A.applyPayload(null));
+  ok(A.applyPayload({ menu:[], schedule:{}, pantry:[], shopping:[], batches:[] }));
+});
+test('applyPayload brings an older file up to the current meal shape', () => {
+  resetFixture();
+  A.applyPayload({ menu:[{ id:'old', name:'Old one', image:'a.jpg' }], schedule:{}, pantry:[], shopping:[] });
+  eq(A.menu[0].images, ['a.jpg'], 'a v2 meal must gain images[]');
+  eq(A.menu[0].nutrition, null);
+});
+
+/* ============================================================
+   OneDrive — driven through a fake fetch
+   ============================================================ */
+group('OneDrive — requests');
+test('every Graph call carries the bearer token', async () => {
+  const realToken = A.odToken;
+  A.odToken = async () => 'TOKEN-NOT-REAL';
+  try{
+    await withFetch({ json:{ ok:true } }, async calls => {
+      await A.graph('/me/drive');
+      eq(calls[0].url, 'https://graph.microsoft.com/v1.0/me/drive');
+      eq(calls[0].headers.Authorization, 'Bearer TOKEN-NOT-REAL');
+    });
+  } finally { A.odToken = realToken; }
+});
+test('a Graph error surfaces the status', async () => {
+  const realToken = A.odToken;
+  A.odToken = async () => 'T';
+  try{
+    await withFetch({ status:404, text:'not found' }, async () => {
+      let msg = '';
+      try{ await A.graph('/nope'); }catch(e){ msg = e.message; }
+      ok(/Graph 404/.test(msg), msg);
+    });
+  } finally { A.odToken = realToken; }
+});
+test('a share link is encoded the way Graph expects', () => {
+  const enc = A.encodeShare('https://1drv.ms/u/s!AbCdEf+gh/ij==');
+  ok(enc.startsWith('u!'), enc);
+  notOk(/[=+/]/.test(enc), 'padding, + and / must be replaced, not sent raw: ' + enc);
+});
+
+group('OneDrive — pull and push');
+/* odResolve() does two things: it returns the target and it sets the module-level
+   `odItem` that odContentPath() then reads. A stub that only returns is not
+   enough — odContentPath() throws on a null odItem. */
+async function withOneDrive(fn, reply){
+  const realToken = A.odToken, realResolve = A.odResolve, realStatus = A.odStatus, realItem = A.odItem;
+  A.odToken = async () => 'TOKEN-NOT-REAL';
+  A.odResolve = async () => (A.odItem = { ownPath:true });
+  A.odStatus = () => {};
+  try{ return await withFetch(reply, fn); }
+  finally {
+    A.odToken = realToken; A.odResolve = realResolve; A.odStatus = realStatus; A.odItem = realItem;
+  }
+}
+test('a pull replaces every store from the file', async () => {
+  resetFixture();
+  const remote = {
+    app:'kitchen-menu', version:4,
+    menu:[{ id:'r1', name:'Remote meal', ingredients:[], steps:[] }],
+    schedule:{ '2026-07-06':[{ mealId:'r1', slot:'dinner' }] },
+    pantry:[{ id:'rp', name:'Remote pantry' }],
+    shopping:[{ id:'rs', name:'Remote item' }],
+    batches:[]
+  };
+  await withOneDrive(async () => {
+    await A.odPull();
+    eq(A.menu.length, 1); eq(A.menu[0].name, 'Remote meal');
+    eq(Object.keys(A.schedule), ['2026-07-06']);
+    eq(A.pantry[0].name, 'Remote pantry');
+    eq(A.shopping[0].name, 'Remote item');
+  }, { json: remote });
+});
+test('a pull refuses a file that is not a MealMap export', async () => {
+  resetFixture();
+  const before = A.menu.length;
+  await withOneDrive(async () => {
+    let threw = false;
+    try{ await A.odPull(); }catch(e){ threw = true; }
+    ok(threw, 'a file with no menu array must be rejected');
+    eq(A.menu.length, before, 'and must leave the local data alone');
+  }, { json:{ something:'else' } });
+});
+test('a pull tidies batches that the file left dangling', async () => {
+  resetFixture();
+  await withOneDrive(async () => {
+    await A.odPull();
+    eq(A.batches.length, 0, 'a batch with no scheduled days must be pruned');
+  }, { json:{ menu:[], schedule:{}, pantry:[], shopping:[],
+              batches:[{ id:'ghost', mealId:'x', cookDate:'2026-01-01', portions:3 }] } });
+});
+test('a pull re-derives the cook day from the earliest scheduled day', async () => {
+  resetFixture();
+  await withOneDrive(async () => {
+    await A.odPull();
+    eq(A.batches[0].cookDate, '2026-07-06', 'a stale cookDate in the file must not survive');
+  }, { json:{ menu:[{ id:'m1', name:'M', ingredients:[], steps:[] }],
+              schedule:{ '2026-07-06':[{ mealId:'m1', slot:'dinner', batchId:'b1' }],
+                         '2026-07-08':[{ mealId:'m1', slot:'dinner', batchId:'b1' }] },
+              pantry:[], shopping:[],
+              batches:[{ id:'b1', mealId:'m1', cookDate:'2020-01-01', portions:2 }] } });
+});
+test('a push sends the whole payload, with the schema version', async () => {
+  resetFixture();
+  A.addShoppingItem('Bread');
+  await withOneDrive(async calls => {
+    await A.odPush();
+    const sent = calls.find(c => c.opts.method === 'PUT');
+    ok(sent, 'expected a PUT');
+    eq(sent.body.app, 'kitchen-menu');
+    eq(sent.body.version, A.SCHEMA_VERSION);
+    eq(Object.keys(sent.body).sort(),
+       ['app','batches','exportedAt','menu','pantry','schedule','shopping','version']);
+    eq(sent.body.shopping[0].name, 'Bread');
+  }, { json:{} });
+});
+test('the push payload never carries the API key or any OneDrive setting', async () => {
+  resetFixture();
+  await withAiKey('gemini', () => withOneDrive(async calls => {
+    await A.odPush();
+    const raw = JSON.stringify(calls.find(c => c.opts.method === 'PUT').body);
+    notOk(raw.includes('TEST-KEY-NOT-REAL'), 'the API key must never leave the browser this way');
+    notOk(/aiKey|aiProvider|odClientId|odShareUrl/.test(raw), 'settings are not user data');
+  }, { json:{} }));
+});
+test('auto-push stays off unless it is switched on and signed in', () => {
+  const realPush = A.odPush;
+  let pushed = 0;
+  A.odPush = async () => { pushed++; };
+  try{
+    A.scheduleAutoPush();                      // no account in the test environment
+    eq(pushed, 0, 'nothing should be queued without a signed-in account');
+  } finally { A.odPush = realPush; }
+});
+
+/* ============================================================
+   How the app is assembled
+   ------------------------------------------------------------
+   The code was split out of one file into css/ and js/. These pin the
+   properties that split depends on, because all of them are the kind of thing
+   a later tidy-up breaks silently.
+   ============================================================ */
+group('Assembly');
+test('the scripts are classic and in-order, not modules', () => {
+  const tags = [...WIN.document.querySelectorAll('script[src]')].filter(s => /\/js\//.test(s.src));
+  eq(tags.length, 10, 'expected ten app scripts');
+  tags.forEach(s => {
+    notOk(s.type === 'module', s.src + ' is a module — that would isolate its scope and break everything below');
+    notOk(s.defer, s.src + ' is deferred — order would stop being guaranteed');
+    notOk(s.async, s.src + ' is async — order would stop being guaranteed');
+  });
+  eq(tags.map(s => s.src.split('/').pop()),
+     ['i18n.js','core.js','menu.js','recipe.js','calendar.js','pantry.js','qr.js','shopping.js','sync.js','ai.js'],
+     'load order is the original code order; qr.js is a library and sits before its one caller; ai.js boots the app so it must stay last');
+});
+test('every file lands in one shared global scope', () => {
+  // If any of these came back undefined, that file had been isolated.
+  const fromEachFile = {
+    'i18n.js': 'I18N', 'core.js': 'STORES', 'menu.js': 'renderMenu', 'recipe.js': 'openRecipe',
+    'calendar.js': 'renderCalendar', 'pantry.js': 'PHRASES', 'qr.js': 'QR_BLOCKS',
+    'shopping.js': 'combineIngredients', 'sync.js': 'syncPayload', 'ai.js': 'aiSystemPrompt'
+  };
+  Object.entries(fromEachFile).forEach(([file, name]) =>
+    ok(A[name] !== undefined, name + ' from ' + file + ' is not reachable — is that file a module now?'));
+});
+test('values derived at load time survive the file order', () => {
+  // Each of these runs at the top level of one file using something defined in
+  // an earlier one, so they break immediately if the order is shuffled.
+  ok(A.PHRASES.length > 300, 'PHRASES is built from PHRASE_SRC via rawWords');
+  ok(A.CANON_NAMES.length > 0, 'CANON_NAMES is derived from SYNONYMS');
+  eq(A.STORES.length, 5, 'STORES is wired to STORE keys defined in i18n.js');
+  ok(Array.isArray(A.menu), 'state is initialised by load(), which is declared later in the same file');
+});
+test('nothing is fetched from a third party', async () => {
+  const res = WIN.performance.getEntriesByType('resource')
+    .filter(r => !r.name.startsWith(WIN.location.origin))
+    // recipe photos are user data — a recipe may legitimately link anywhere
+    .filter(r => r.initiatorType !== 'img' && !/\.(jpg|jpeg|png|webp|gif)(\?|$)/i.test(r.name));
+  eq(res.map(r => r.name), [], 'the app itself must load nothing from another origin');
+});
+test('the libraries and fonts are served from this origin', async () => {
+  for(const path of ['lib/msal-browser.min.js', 'lib/xlsx.full.min.js',
+                     'fonts/Fraunces-latin.woff2', 'fonts/Inter-latin-ext.woff2', 'css/fonts.css']){
+    const r = await WIN.fetch(path);
+    ok(r.ok, path + ' is missing — it must ship with the app');
+  }
+});
+test('loadScript resolves a relative path before checking if it is loaded', async () => {
+  // script.src reads back absolute, so comparing it to a relative string never
+  // matched and the library was appended again on every call.
+  const before = WIN.document.scripts.length;
+  await new Promise((res, rej) => A.loadScript('lib/xlsx.full.min.js', res, rej));
+  const once = WIN.document.scripts.length;
+  await new Promise(res => A.loadScript('lib/xlsx.full.min.js', res, res));
+  eq(WIN.document.scripts.length, once, 'a second request must be a no-op, not another script tag');
+  ok(once >= before, 'sanity');
+});
+test('the fonts cover the accents the languages need', async () => {
+  await WIN.document.fonts.ready;
+  // Not document.fonts.check() — it answers true for a family that does not
+  // exist at all, so it can never fail. load() returns the faces it actually
+  // matched, and an empty array for a family nobody declared.
+  eq((await WIN.document.fonts.load('600 20px NotADeclaredFamily', 'a')).length, 0,
+     'sanity: an undeclared family must come back empty, or the assertions below prove nothing');
+  ok((await WIN.document.fonts.load('600 20px Fraunces', 'a')).length > 0, 'Fraunces did not load from fonts/');
+  ok((await WIN.document.fonts.load('500 14px Inter', 'a')).length > 0, 'Inter did not load from fonts/');
+  ok((await WIN.document.fonts.load('600 20px Fraunces', 'čšž')).length > 0,
+     'latin-ext is what carries č, š and ž — do not drop that subset');
+  const faces = [...WIN.document.fonts];
+  eq(faces.length, 4, 'two families × two subsets; more than that means the weight range got expanded again');
+  faces.forEach(f => eq(f.status, 'loaded', f.family + ' ' + f.weight + ' never finished loading'));
+});
+
+/* ============================================================
+   Safety net — the runner must not touch real data
+   ============================================================ */
+group('Test-harness safety');
+test('persistence is stubbed: no test wrote to localStorage', () => {
+  ok(stubbedSaves > 0, 'the app should have tried to save at least once during the run');
+  notOk(A.putKey === REAL_PUT_KEY, 'the stub must still be in place at the end of the run');
+  ['kitchenMenu.items','kitchenMenu.schedule','kitchenMenu.pantry','kitchenMenu.shopping','kitchenMenu.batches']
+    .forEach(k => eq(WIN.localStorage.getItem(k), LS_SNAPSHOT[k] ?? null,
+                     'the real stored value of ' + k + ' changed — the save stub is not holding'));
+});
+test('the AI tests put your real API key and provider back', () => {
+  AI_SETTINGS.forEach(k => eq(WIN.localStorage.getItem(A.STORE[k]), LS_SNAPSHOT[A.STORE[k]] ?? null,
+                              A.STORE[k] + ' was left changed by a test'));
+});
+test('fetch was restored after the fake-fetch tests', () => {
+  ok(typeof A.fetch === 'function');
+  notOk(String(A.fetch).includes('calls.push'), 'a fake fetch is still installed');
+});
+test('the app bridge reaches lexical globals, not just window properties', () => {
+  ok(Array.isArray(A.menu),    'menu is a `let` and must still be readable');
+  ok(A.I18N && A.I18N.en,      'I18N is a `const` and must still be readable');
+  ok(typeof A.parseQty === 'function', 'function declarations must resolve too');
+  eq(typeof A.SCHEMA_VERSION, 'number');
+});
+test('the fixture, not your data, is what the tests ran against', () => {
+  resetFixture();
+  eq(A.menu.length, 4);
+  eq(A.menu[0].id, 't_pancake');
+});
+
+/* ============================================================
+   Runner
+   ============================================================ */
+let LS_SNAPSHOT = {}, WIN = null;
+function snapshotLocalStorage(win){
+  const out = {};
+  for(let i = 0; i < win.localStorage.length; i++){
+    const k = win.localStorage.key(i);
+    out[k] = win.localStorage.getItem(k);
+  }
+  return out;
+}
+function restoreLocalStorage(win, snap){
+  const now = snapshotLocalStorage(win);
+  Object.keys(now).forEach(k => { if(!(k in snap)) win.localStorage.removeItem(k); });
+  Object.entries(snap).forEach(([k, v]) => { if(now[k] !== v) win.localStorage.setItem(k, v); });
+}
+
+const resultsEl = document.getElementById('results');
+const summaryEl = document.getElementById('summary');
+
+function renderSummary(pass, failCount, total, done){
+  const bar = summaryEl.querySelector('.bar');
+  bar.classList.toggle('bad', failCount > 0);
+  bar.querySelector('i').style.width = (total ? (pass + failCount) / total * 100 : 0) + '%';
+  summaryEl.querySelector('.tally').innerHTML =
+    `<span class="ok">✓ ${pass} passed</span>` +
+    (failCount ? `<span class="no">✗ ${failCount} failed</span>` : '') +
+    `<span class="dim">${done ? 'of ' + total + ' — done' : 'of ' + total + '…'}</span>`;
+  document.title = (failCount ? '✗ ' + failCount + ' failing' : '✓ ' + pass + ' passing') + ' — MealMap tests';
+}
+
+async function run(){
+  const frame = document.getElementById('app');
+  await new Promise(res => frame.addEventListener('load', res, { once:true }));
+  const win = frame.contentWindow;
+  A = appBridge(win);
+
+  LS_SNAPSHOT = snapshotLocalStorage(win);
+  WIN = win;
+
+  /* Nothing in this run may reach real storage. putKey() is the single choke
+     point for every write, so stubbing *that* rather than saveLocalOnly() keeps
+     the real save logic — including the hydration hold-back — under test while
+     no byte reaches localStorage or IndexedDB. */
+  REAL_PUT_KEY = A.putKey;
+  A.putKey = (key, str) => { stubbedSaves++; PUT_LOG.push(key); return true; };
+  A.alert = () => {};                       // a few paths alert(); tests assert on state instead
+  A.print = () => {};
+  let pass = 0, failed = 0, lastGroup = null;
+  try{
+    for(const tc of TESTS){
+      if(tc.group !== lastGroup){
+        lastGroup = tc.group;
+        const h = document.createElement('h2'); h.textContent = tc.group; resultsEl.appendChild(h);
+      }
+      const row = document.createElement('div');
+      row.className = 't';
+      row.innerHTML = '<span class="mark"></span><span class="what"></span>';
+      row.querySelector('.what').textContent = tc.name;
+      resultsEl.appendChild(row);
+      try{
+        resetFixture();
+        await tc.fn();
+        row.classList.add('pass'); row.querySelector('.mark').textContent = '✓'; pass++;
+      }catch(e){
+        row.classList.add('fail'); row.querySelector('.mark').textContent = '✗'; failed++;
+        const why = document.createElement('div');
+        why.className = 'why';
+        why.textContent = (e instanceof Failure ? '' : (e.name + ': ')) + (e && e.message || String(e))
+          + (e instanceof Failure || !e.stack ? '' : '\n\n' + e.stack.split('\n').slice(0, 4).join('\n'));
+        resultsEl.appendChild(why);
+      }
+      renderSummary(pass, failed, TESTS.length, false);
+      if((pass + failed) % 12 === 0) await wait(0);       // let the page paint
+    }
+  } finally {
+    try{ A.exitCookMode(); }catch(e){}
+    restoreLocalStorage(win, LS_SNAPSHOT);
+  }
+
+  renderSummary(pass, failed, TESTS.length, true);
+  window.__results = {
+    total: TESTS.length, pass, fail: failed,
+    failures: [...document.querySelectorAll('.t.fail')].map((r, i) => ({
+      name: r.querySelector('.what').textContent,
+      why: (r.nextElementSibling && r.nextElementSibling.className === 'why')
+            ? r.nextElementSibling.textContent : ''
+    }))
+  };
+  window.__done = true;
+}
+
+window.addEventListener('beforeunload', () => {
+  // If the page is closed mid-run, put storage back the way it was.
+  try{ if(A && !window.__done) restoreLocalStorage(A, LS_SNAPSHOT); }catch(e){}
+});
+
+run();
+</script>
+</body>
+</html>
